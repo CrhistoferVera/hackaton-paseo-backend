@@ -1,0 +1,222 @@
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Db, Queryable, many, one } from '../../infra/db/db.js';
+import type { Sesion } from '../../common/auth/tokens.js';
+import { AuditoriaService, NotificacionesService } from '../nucleo/nucleo.services.js';
+import { ExperienciasService } from './experiencias.service.js';
+
+export interface DatosActividad {
+  titulo: string;
+  descripcion?: string;
+  tipo: string;
+  inicio: string;
+  fin: string;
+  zonaId?: string | null;
+  lugar?: string;
+  precioBs?: number | null;
+  cupos?: number | null;
+  puntos?: number;
+}
+
+export interface DatosSolicitudDrop {
+  productoId: string;
+  precioEspecial: number;
+  mensaje: string;
+  zonaId?: string | null;
+  fechaDeseada?: string | null;
+  minutos?: number;
+  maxReclamos?: number;
+}
+
+/**
+ * Eventos del Paseo (conciertos, ferias, talleres…) y solicitudes de Drop de los comercios.
+ * Un comercio propone; administración o marketing aprueba. Así la app y Jarvis solo muestran lo aprobado.
+ */
+@Injectable()
+export class EventosService {
+  constructor(
+    private readonly db: Db,
+    private readonly notif: NotificacionesService,
+    private readonly auditoria: AuditoriaService,
+    private readonly exp: ExperienciasService,
+  ) {}
+
+  // ------------------------------------------------------------------ eventos
+
+  /** Eventos aprobados que no terminaron, del más próximo al más lejano. */
+  proximos(recintoId: string, dias = 30) {
+    return many(
+      this.db,
+      `select a.id, a.titulo, a.descripcion, a.tipo, a.inicio, a.fin, a.lugar, a.precio_bs, a.cupos, a.puntos,
+              a.zona_id, z.nombre as zona, z.piso, a.local_id, l.nombre as local, (now() between a.inicio and a.fin) as en_curso
+       from actividad a left join zona z on z.id = a.zona_id left join local l on l.id = a.local_id
+       where a.recinto_id = $1 and a.estado = 'aprobada' and a.fin > now() and a.inicio < now() + ($2 || ' days')::interval
+       order by a.inicio`,
+      [recintoId, dias],
+    );
+  }
+
+  todos(recintoId: string, estado?: string) {
+    return many(
+      this.db,
+      `select a.*, z.nombre as zona, z.piso, l.nombre as local, u.nombre as creado_por_nombre
+       from actividad a left join zona z on z.id = a.zona_id left join local l on l.id = a.local_id left join usuario u on u.id = a.creado_por
+       where a.recinto_id = $1 and ($2::text is null or a.estado = $2)
+       order by (a.estado = 'pendiente') desc, a.inicio desc limit 200`,
+      [recintoId, estado ?? null],
+    );
+  }
+
+  delLocal(localId: string) {
+    return many(this.db, `select a.*, z.nombre as zona from actividad a left join zona z on z.id = a.zona_id where a.local_id = $1 order by a.inicio desc`, [localId]);
+  }
+
+  private async validarActividad(q: Queryable, recintoId: string, d: DatosActividad) {
+    if (new Date(d.fin) <= new Date(d.inicio)) throw new BadRequestException('El evento debe terminar después de empezar');
+    if (d.zonaId && !(await one(q, 'select 1 from zona where id = $1 and recinto_id = $2', [d.zonaId, recintoId]))) throw new NotFoundException('Zona no encontrada');
+  }
+
+  private insertarActividad(q: Queryable, s: Sesion, d: DatosActividad, localId: string | null, estado: string, lugar: string) {
+    return one(
+      q,
+      `insert into actividad (recinto_id, titulo, descripcion, tipo, inicio, fin, zona_id, local_id, lugar, precio_bs, cupos, puntos, estado, creado_por, revisado_por)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
+      [s.recintoId, d.titulo, d.descripcion ?? '', d.tipo, d.inicio, d.fin, d.zonaId ?? null, localId, lugar, d.precioBs ?? null, d.cupos ?? null, d.puntos ?? 0,
+        estado, s.sub, estado === 'aprobada' ? s.sub : null],
+    );
+  }
+
+  /** El comercio propone un evento en su local o en una zona; queda pendiente. */
+  async proponer(s: Sesion, d: DatosActividad) {
+    if (!s.localId) throw new BadRequestException('Tu cuenta no está asignada a un comercio');
+    return this.db.tx(async (q) => {
+      await this.validarActividad(q, s.recintoId, d);
+      const l = await one<any>(q, 'select nombre, numero_local, zona_id from local where id = $1', [s.localId]);
+      const a = await this.insertarActividad(q, s, { ...d, zonaId: d.zonaId ?? l.zona_id, puntos: 0 }, s.localId!, 'pendiente', d.lugar?.trim() || `${l.nombre}, local ${l.numero_local}`);
+      await this.avisarAdmins(q, s.recintoId, 'evento_pendiente', 'Evento por aprobar', `${l.nombre} propone «${d.titulo}»`, { actividadId: a.id });
+      return a;
+    });
+  }
+
+  async crearDeAdmin(s: Sesion, d: DatosActividad & { localId?: string | null }) {
+    return this.db.tx(async (q) => {
+      await this.validarActividad(q, s.recintoId, d);
+      const z = d.zonaId ? await one<any>(q, 'select nombre from zona where id = $1', [d.zonaId]) : null;
+      const a = await this.insertarActividad(q, s, d, d.localId ?? null, 'aprobada', d.lugar?.trim() || z?.nombre || 'Paseo Aranjuez');
+      await this.auditoria.registrar(q, s.sub, 'crear_evento', 'actividad', a.id, null, a);
+      return a;
+    });
+  }
+
+  async revisarActividad(s: Sesion, id: string, estado: 'aprobada' | 'rechazada' | 'cancelada', comentario?: string, puntos?: number) {
+    return this.db.tx(async (q) => {
+      const antes = await one<any>(q, 'select * from actividad where id = $1 and recinto_id = $2 for update', [id, s.recintoId]);
+      if (!antes) throw new NotFoundException('Evento no encontrado');
+      if (estado !== 'aprobada' && !comentario?.trim()) throw new BadRequestException('Explica el motivo');
+      const a = await one(q, 'update actividad set estado = $2, comentario = $3, revisado_por = $4, puntos = coalesce($5, puntos) where id = $1 returning *', [
+        id, estado, comentario ?? null, s.sub, puntos ?? null,
+      ]);
+      await this.auditoria.registrar(q, s.sub, `evento_${estado}`, 'actividad', id, antes, a);
+      if (antes.creado_por && antes.creado_por !== s.sub) {
+        await this.notif.crear(q, antes.creado_por, 'evento_revisado', estado === 'aprobada' ? 'Evento aprobado' : `Evento ${estado}`,
+          estado === 'aprobada' ? `«${antes.titulo}» ya aparece en la app y Jarvis lo recomienda` : `«${antes.titulo}»: ${comentario}`, { actividadId: id });
+      }
+      return a;
+    });
+  }
+
+  /** El comercio retira su propuesta (pendiente) o cancela su evento aprobado. */
+  async cancelarDeLocal(s: Sesion, id: string) {
+    const a = await one<any>(this.db, 'select * from actividad where id = $1 and local_id = $2', [id, s.localId]);
+    if (!a) throw new NotFoundException('Evento no encontrado');
+    if (a.estado === 'pendiente') {
+      await this.db.query('delete from actividad where id = $1', [id]);
+      return { id, eliminado: true };
+    }
+    return one(this.db, `update actividad set estado = 'cancelada', comentario = 'Cancelado por el comercio' where id = $1 returning *`, [id]);
+  }
+
+  // ------------------------------------------------------------------ solicitudes de Drop
+
+  async solicitarDrop(s: Sesion, d: DatosSolicitudDrop) {
+    if (!s.localId) throw new BadRequestException('Tu cuenta no está asignada a un comercio');
+    return this.db.tx(async (q) => {
+      const p = await one<any>(q, 'select p.*, l.zona_id, l.nombre as local from producto p join local l on l.id = p.local_id where p.id = $1 and p.local_id = $2 and p.activo', [
+        d.productoId, s.localId,
+      ]);
+      if (!p) throw new NotFoundException('Ese producto no es de tu comercio o está inactivo');
+      if (d.precioEspecial >= Number(p.precio_bs)) throw new BadRequestException(`El precio del Drop debe ser menor a Bs ${Number(p.precio_bs).toFixed(2)}`);
+      if (d.fechaDeseada && new Date(d.fechaDeseada).getTime() < Date.now() - 60_000) throw new BadRequestException('La fecha deseada ya pasó');
+      const sol = await one<any>(
+        q,
+        `insert into solicitud_drop (recinto_id, local_id, producto_id, zona_id, precio_especial, mensaje, fecha_deseada, minutos, max_reclamos, creado_por)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+        [s.recintoId, s.localId, d.productoId, d.zonaId ?? p.zona_id, d.precioEspecial, d.mensaje, d.fechaDeseada ?? null, d.minutos ?? 60, d.maxReclamos ?? 50, s.sub],
+      );
+      await this.avisarAdmins(q, s.recintoId, 'drop_solicitado', 'Drop solicitado', `${p.local} pide un Drop de ${p.nombre} a Bs ${d.precioEspecial.toFixed(2)}`, { solicitudId: sol.id });
+      return sol;
+    });
+  }
+
+  solicitudesDelLocal(localId: string) {
+    return many(
+      this.db,
+      `select s.*, p.nombre as producto, p.precio_bs, z.nombre as zona, z.piso,
+              (select count(*)::int from reclamo_drop r where r.drop_id = s.drop_id) as reclamos
+       from solicitud_drop s join producto p on p.id = s.producto_id left join zona z on z.id = s.zona_id
+       where s.local_id = $1 order by s.creado_en desc`,
+      [localId],
+    );
+  }
+
+  solicitudes(recintoId: string, estado?: string) {
+    return many(
+      this.db,
+      `select s.*, p.nombre as producto, p.precio_bs, p.stock, l.nombre as local, z.nombre as zona, z.piso
+       from solicitud_drop s join producto p on p.id = s.producto_id join local l on l.id = s.local_id left join zona z on z.id = s.zona_id
+       where s.recinto_id = $1 and ($2::text is null or s.estado = $2)
+       order by (s.estado = 'pendiente') desc, s.creado_en desc limit 200`,
+      [recintoId, estado ?? null],
+    );
+  }
+
+  /** Aprobar = lanzar el Drop ahora con los datos pedidos (el admin puede ajustar zona y duración). */
+  async lanzarSolicitud(s: Sesion, id: string, ajustes: { zonaId?: string; minutos?: number; maxReclamos?: number }) {
+    const sol = await one<any>(this.db, 'select * from solicitud_drop where id = $1 and recinto_id = $2', [id, s.recintoId]);
+    if (!sol) throw new NotFoundException('Solicitud no encontrada');
+    if (sol.estado !== 'pendiente') throw new BadRequestException('La solicitud ya fue atendida');
+    const zonaId = ajustes.zonaId ?? sol.zona_id;
+    if (!zonaId) throw new BadRequestException('Elige la zona del Drop');
+    const drop = await this.exp.lanzarDrop(s, {
+      zonaId, productoId: sol.producto_id, precioEspecial: Number(sol.precio_especial), mensaje: sol.mensaje,
+      minutos: ajustes.minutos ?? sol.minutos, maxReclamos: ajustes.maxReclamos ?? sol.max_reclamos, localId: sol.local_id,
+    });
+    await this.db.tx(async (q) => {
+      await q.query(`update solicitud_drop set estado = 'lanzada', drop_id = $2, revisado_por = $3 where id = $1`, [id, drop.id, s.sub]);
+      await this.notif.crear(q, sol.creado_por, 'drop_lanzado', 'Tu Drop está activo', `${drop.producto} a Bs ${Number(sol.precio_especial).toFixed(2)} en ${drop.zona}`, { dropId: drop.id });
+    });
+    return drop;
+  }
+
+  async rechazarSolicitud(s: Sesion, id: string, comentario: string) {
+    if (!comentario?.trim()) throw new BadRequestException('Explica el motivo del rechazo');
+    return this.db.tx(async (q) => {
+      const sol = await one<any>(q, `update solicitud_drop set estado = 'rechazada', comentario = $3, revisado_por = $4 where id = $1 and recinto_id = $2 and estado = 'pendiente' returning *`, [
+        id, s.recintoId, comentario, s.sub,
+      ]);
+      if (!sol) throw new NotFoundException('Solicitud no encontrada o ya atendida');
+      await this.notif.crear(q, sol.creado_por, 'drop_rechazado', 'Drop no aprobado', comentario, { solicitudId: id });
+      return sol;
+    });
+  }
+
+  async cancelarSolicitud(s: Sesion, id: string) {
+    const r = await one(this.db, `update solicitud_drop set estado = 'cancelada' where id = $1 and local_id = $2 and estado = 'pendiente' returning id`, [id, s.localId]);
+    if (!r) throw new NotFoundException('Solo puedes cancelar solicitudes pendientes de tu comercio');
+    return r;
+  }
+
+  private async avisarAdmins(q: Queryable, recintoId: string, tipo: string, titulo: string, cuerpo: string, datos: Record<string, unknown>) {
+    const admins = await many<{ id: string }>(q, `select id from usuario where recinto_id = $1 and rol in ('admin','marketing') and estado = 'activo'`, [recintoId]);
+    for (const a of admins) await this.notif.crear(q, a.id, tipo, titulo, cuerpo, datos);
+  }
+}
