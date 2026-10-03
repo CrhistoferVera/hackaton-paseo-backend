@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Module, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Module, NotFoundException, Param, Post, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
-import { Roles, SesionActual } from '../../common/auth/auth.guard.js';
+import { Publico, Roles, SesionActual } from '../../common/auth/auth.guard.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { ZodPipe } from '../../common/zod.pipe.js';
 import { OrientacionService } from '../orientacion/orientacion.service.js';
@@ -10,6 +11,10 @@ import { OrquestadorJarvis } from './orquestador.service.js';
 import { MemoriaJarvis } from './memoria.service.js';
 import { ConocimientoPaseo } from './conocimiento.service.js';
 import { OidoJarvis } from './oido.service.js';
+import { EquidadService } from './equidad.service.js';
+import { PerfilService } from './perfil.service.js';
+import { RecomendadorService } from './recomendador.service.js';
+import { VozNeuralService } from './voz-neural.service.js';
 
 const DestinoSchema = z.object({ destino: z.string().min(3), via: z.string().optional() });
 
@@ -64,11 +69,12 @@ export class JarvisAdminController {
     private readonly cerebro: CerebroJarvis,
     private readonly orientacion: OrientacionService,
     private readonly oido: OidoJarvis,
+    private readonly voz: VozNeuralService,
   ) {}
 
   @Get()
   async resumen(@SesionActual() s: Sesion) {
-    return { disponibilidad: await this.cerebro.estado(), oido: this.oido.estado, ...(await this.orquestador.ultimas(s.recintoId)) };
+    return { disponibilidad: await this.cerebro.estado(), oido: this.oido.estado, voz: this.voz.estado, ...(await this.orquestador.ultimas(s.recintoId)) };
   }
 
   @Roles('admin')
@@ -78,9 +84,25 @@ export class JarvisAdminController {
   }
 }
 
+/** Audio de la voz de Jarvis: el id es aleatorio y de un solo uso práctico (vive 30 minutos). */
+@Publico()
+@Controller('voz')
+export class VozController {
+  constructor(private readonly voz: VozNeuralService) {}
+
+  @Get(':archivo')
+  audio(@Param('archivo') archivo: string, @Res() res: Response) {
+    const mp3 = this.voz.audio(archivo.replace(/\.mp3$/, ''));
+    if (!mp3) throw new NotFoundException('Audio vencido');
+    res.setHeader('content-type', 'audio/mpeg');
+    res.setHeader('cache-control', 'private, max-age=1800');
+    res.end(mp3);
+  }
+}
+
 @Module({
-  controllers: [OrientacionClienteController, GrafoController, JarvisAdminController],
-  providers: [OrientacionService, MotorOllama, MotorNube, CerebroJarvis, ContextoService, OrquestadorJarvis, MemoriaJarvis, ConocimientoPaseo, OidoJarvis],
-  exports: [OrientacionService, CerebroJarvis, OrquestadorJarvis, ContextoService, MemoriaJarvis, ConocimientoPaseo, OidoJarvis],
+  controllers: [OrientacionClienteController, GrafoController, JarvisAdminController, VozController],
+  providers: [OrientacionService, MotorOllama, MotorNube, CerebroJarvis, ContextoService, OrquestadorJarvis, MemoriaJarvis, ConocimientoPaseo, OidoJarvis, EquidadService, PerfilService, RecomendadorService, VozNeuralService],
+  exports: [OrientacionService, CerebroJarvis, OrquestadorJarvis, ContextoService, MemoriaJarvis, ConocimientoPaseo, OidoJarvis, EquidadService, PerfilService, RecomendadorService, VozNeuralService],
 })
 export class JarvisModule {}

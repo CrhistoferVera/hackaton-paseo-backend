@@ -89,6 +89,10 @@ Te dan la respuesta correcta ya armada con datos reales del Paseo. Reescríbela 
 Reglas: conserva exactamente nombres, números, precios, horas, metros y puntos; no agregues lugares, precios ni datos que no estén en la respuesta;
 máximo 3 oraciones; sin emojis, sin listas, sin comillas; si la conversación ya empezó, no vuelvas a saludar.`;
 
+export const SISTEMA_ANALISTA = `Eres el analista de datos del Centro de Inteligencia del Paseo Aranjuez (La Paz, Bolivia). Hablas con el equipo de administración y marketing.
+Te dan la respuesta correcta ya armada con datos reales. Reescríbela clara y profesional, en español, como un analista que explica a su jefa.
+Reglas: conserva exactamente todos los números, porcentajes, nombres de locales y fechas; no agregues datos; máximo 4 oraciones; sin emojis ni listas.`;
+
 export const SISTEMA_LIBRE = `Eres Jarvis, el asistente de voz del Paseo Aranjuez, un centro comercial en La Paz, Bolivia. Hablas con tuteo, cálido y breve.
 Responde la pregunta del cliente usando solo los datos del Paseo que te doy. No inventes horarios, precios, lugares ni políticas.
 Si los datos no alcanzan, dilo con honestidad en una frase y ofrece algo que sí puedes hacer: buscar un producto, ver promociones, eventos o cómo llegar a un lugar.
@@ -130,7 +134,7 @@ export class CerebroJarvis implements OnModuleInit {
     borrador: string,
     contexto: string[],
     claves: string[],
-    opciones: { historial?: string; pregunta?: string } = {},
+    opciones: { historial?: string; pregunta?: string; sistema?: string } = {},
   ): Promise<{ texto: string; motor: string; latenciaMs: number }> {
     const t0 = Date.now();
     const chat = opciones.pregunta !== undefined;
@@ -139,7 +143,7 @@ export class CerebroJarvis implements OnModuleInit {
       : `Mensaje: ${borrador}\n${contexto.length ? `Contexto cercano:\n- ${contexto.join('\n- ')}\n` : ''}Reescríbelo para decirlo en voz alta.`;
     for (const m of this.motores) {
       if (!(await m.disponible())) continue;
-      const r = await m.generar(chat ? SISTEMA_CHAT : SISTEMA_JARVIS, prompt, { maxTokens: chat ? 130 : 90, timeoutMs: this.timeoutMs });
+      const r = await m.generar(opciones.sistema ?? (chat ? SISTEMA_CHAT : SISTEMA_JARVIS), prompt, { maxTokens: chat ? 130 : 90, timeoutMs: this.timeoutMs });
       const texto = r ? CerebroJarvis.limpiar(r, chat ? 3 : 2) : null;
       if (texto && claves.every((c) => CerebroJarvis.normalizar(texto).includes(CerebroJarvis.normalizar(c))) && CerebroJarvis.mismosNumeros(borrador, texto) && !CerebroJarvis.primeraPersonaNueva(borrador, texto) && !CerebroJarvis.agregaSaludo(borrador, texto) && texto.length <= borrador.length * 1.5 + 30) {
         return { texto, motor: m.nombre, latenciaMs: Date.now() - t0 };

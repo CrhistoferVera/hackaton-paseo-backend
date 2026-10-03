@@ -23,11 +23,13 @@ import { CajaController, ClienteFacturaController } from './comercio/comercio.co
 import { PaseoYaService } from './paseoya/paseoya.service.js';
 import { PaseoYaAdminController, PaseoYaCatalogoController, PaseoYaClienteController, PaseoYaLocalController } from './paseoya/paseoya.controller.js';
 import { InteligenciaService } from './inteligencia/inteligencia.service.js';
-import { InteligenciaController, PanelLocalController } from './inteligencia/inteligencia.controller.js';
+import { AsistenteController, InteligenciaController, PanelLocalController } from './inteligencia/inteligencia.controller.js';
+import { AsistenteAdmin } from './inteligencia/asistente.service.js';
 import { JarvisService } from './integraciones/jarvis.service.js';
 import { IntegracionesApiController, JarvisClienteController } from './integraciones/integraciones.controller.js';
 import { JarvisGateway } from './integraciones/jarvis.gateway.js';
 import { JarvisModule } from './jarvis/jarvis.module.js';
+import { OfertasModule } from './ofertas/ofertas.module.js';
 
 @Module({
   imports: [FidelizacionModule],
@@ -80,8 +82,9 @@ export class ComercioModule {}
 export class PaseoYaModule {}
 
 @Module({
-  controllers: [InteligenciaController, PanelLocalController],
-  providers: [InteligenciaService],
+  imports: [JarvisModule],
+  controllers: [InteligenciaController, PanelLocalController, AsistenteController],
+  providers: [InteligenciaService, AsistenteAdmin],
 })
 export class InteligenciaModule {}
 
@@ -105,5 +108,6 @@ export const MODULOS_DOMINIO = [
   PaseoYaModule,
   InteligenciaModule,
   JarvisModule,
+  OfertasModule,
   IntegracionesModule,
 ];

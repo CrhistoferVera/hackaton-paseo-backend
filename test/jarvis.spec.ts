@@ -5,7 +5,7 @@ import { limpiarTranscripcion } from '../src/modules/jarvis/oido.service.js';
 import { horaVoz, lista } from '../src/modules/jarvis/voz.js';
 
 // detectar() solo usa la frase, las entidades reconocidas y la memoria: se prueba sin base de datos
-const jarvis = new JarvisService(...(Array(9).fill(null) as [any, any, any, any, any, any, any, any, any]));
+const jarvis = new (JarvisService as any)(...Array(10).fill(null)) as JarvisService;
 const sinEntidades: Record<string, any> = { locales: [], productos: [], servicio: null, actividad: null, categoria: null };
 const detectar = (frase: string, extra: Record<string, any> = {}, mem = {}, hilo: any[] = []) =>
   jarvis.detectar({ t: normalizar(frase), ent: { ...sinEntidades, ...extra } as any, mem, hilo });

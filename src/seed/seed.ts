@@ -725,6 +725,25 @@ async function main() {
   // María está en el Paseo: llegó por el parqueo
   await orientacion.moverA(mariaId, 'N1:entrada:parqueo', 'entrada');
   console.log(`  grafo del edificio: ${g.nodos} nodos, ${g.aristas} conexiones`);
+
+  // Ofertas personales de la IA: 14 días de historia (con canjes simulados) y las de hoy
+  console.log('Generando ofertas personales de la IA (14 días de historia + hoy)…');
+  const { OfertasService } = await import('../modules/ofertas/ofertas.service.js');
+  const ofertas = app.get(OfertasService);
+  const hoyBo = new Date(Date.now() - 4 * MS_HORA).toISOString().slice(0, 10);
+  for (let k = 14; k >= 1; k--) {
+    const fecha = new Date(Date.parse(`${hoyBo}T12:00:00Z`) - k * MS_DIA).toISOString().slice(0, 10);
+    await ofertas.generarDia(recinto, fecha, { forzar: true, notificar: false });
+    // Los locales con más déficit (más equidad) convierten un poco mejor: el incentivo pesa más donde hay menos gente
+    await db2.query(
+      `update oferta_personal set estado = 'usada', puntos_bono = (15 + random() * 90)::int,
+         usada_en = (fecha + hora_inicio + interval '35 minutes') + interval '4 hours'
+       where recinto_id = $1 and fecha = $2::date and random() < 0.1 + 0.2 * equidad`,
+      [recinto, fecha],
+    );
+  }
+  const r = await ofertas.generarDia(recinto, hoyBo, { forzar: true, notificar: true });
+  console.log(`  hoy: ${r.generadas} ofertas para ${r.clientes} clientes en ${(r as any).locales ?? 0} locales`);
   await app.close();
   console.log(`Listo en ${Math.round((Date.now() - t0) / 1000)} s.`);
   console.log(`

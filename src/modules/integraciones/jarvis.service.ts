@@ -10,17 +10,18 @@ import { CerebroJarvis } from '../jarvis/cerebro.js';
 import { OrquestadorJarvis } from '../jarvis/orquestador.service.js';
 import { ConocimientoPaseo, type Encontrado, normalizar } from '../jarvis/conocimiento.service.js';
 import { type Entidades, MemoriaJarvis, type Turno } from '../jarvis/memoria.service.js';
+import { RecomendadorService } from '../jarvis/recomendador.service.js';
 import { de, diaVoz, dinero, duracionVoz, fechaVoz, hhmmBo, horaVoz, lista, lugar } from '../jarvis/voz.js';
 
 export type Intencion =
   | 'saludo' | 'gracias' | 'ayuda' | 'reinicio' | 'afirmacion'
   | 'saldo' | 'nivel' | 'canjes' | 'vencimiento' | 'movimientos' | 'puntos_ganar' | 'oportunidades'
-  | 'promociones' | 'eventos' | 'misiones' | 'drops' | 'parqueo'
+  | 'promociones' | 'ofertas' | 'eventos' | 'misiones' | 'drops' | 'parqueo'
   | 'horario' | 'local_info' | 'donde' | 'servicio' | 'precio' | 'producto' | 'tiempo' | 'recomendacion'
   | 'pedido_estado' | 'pedido_donde' | 'espera' | 'cerca' | 'libre' | 'desconocida';
 
 const CLASIFICABLES: Intencion[] = [
-  'saldo', 'nivel', 'canjes', 'puntos_ganar', 'oportunidades', 'promociones', 'eventos', 'misiones', 'drops', 'parqueo', 'horario', 'local_info',
+  'saldo', 'nivel', 'canjes', 'puntos_ganar', 'oportunidades', 'promociones', 'ofertas', 'eventos', 'misiones', 'drops', 'parqueo', 'horario', 'local_info',
   'donde', 'servicio', 'precio', 'producto', 'tiempo', 'recomendacion', 'pedido_estado', 'pedido_donde', 'espera', 'cerca', 'libre',
 ];
 
@@ -84,6 +85,7 @@ export class JarvisService {
     private readonly orquestador: OrquestadorJarvis,
     private readonly saber: ConocimientoPaseo,
     private readonly memoria: MemoriaJarvis,
+    private readonly recomendador: RecomendadorService,
   ) {}
 
   async recintoPorDefecto(): Promise<string> {
@@ -207,6 +209,7 @@ export class JarvisService {
     if (habla(/\b(mision|misiones|reto|retos|desafio)/)) return 'misiones';
     if (habla(/\bdrops?\b|caja sorpresa|relampago/)) return 'drops';
 
+    if (habla(/(mis ofertas|mi oferta|ofertas (para mi|personales|de hoy|del dia)|oferta personal|que ofertas tengo|tengo (alguna )?oferta|que tengo (hoy|para mi))/)) return 'ofertas';
     if (habla(/(promo|oferta|descuento|2x1|dos por uno|rebaja|liquidacion)/) && !habla(/(cerca de mi|por aqui|aqui cerca)/)) return 'promociones';
     if (ent.actividad || habla(/\b(evento|eventos|concierto|conciertos|feria|ferias|taller|talleres|show|shows|espectaculo|actividad|actividades|que hacer|presentacion)\b/) || habla(/que (hay|hacer|planes)( para)? (hoy|manana|esta noche|esta tarde|(este |el )?fin de semana|el sabado|el domingo)/)) return 'eventos';
     if (habla(/(parqueo|estacionamiento|parking|estacionar|mi auto|mi carro|mi vehiculo)/)) return 'parqueo';
@@ -290,6 +293,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       puntos_ganar: (c) => this.puntosGanar(c),
       oportunidades: (c) => this.oportunidades(c),
       promociones: (c) => this.promociones(c),
+      ofertas: (c) => this.ofertas(c),
       eventos: (c) => this.eventos(c),
       misiones: (c) => this.misiones(c),
       drops: (c) => this.drops(c),
@@ -336,21 +340,32 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   private async saludo(c: Ctx): Promise<Borrador> {
     const ya = c.hilo.some((x) => x.rol === 'cliente');
-    const partes = [ya ? `¡Aquí sigo${c.nombre ? `, ${c.nombre}` : ''}!` : `¡Hola${c.nombre ? `, ${c.nombre}` : ''}! Soy Jarvis.`];
+    const hora = Number(ahoraBolivia().hhmm.slice(0, 2));
+    const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
+    const partes = [ya ? `¡Aquí sigo${c.nombre ? `, ${c.nombre}` : ''}!` : `¡${saludo}${c.nombre ? `, ${c.nombre}` : ''}! Soy Jarvis.`];
+    let ofertaLocal: string | undefined;
     if (c.clienteId) {
       const pedidos = await this.saber.pedidosAbiertos(c.clienteId);
       const listo = pedidos.find((p) => p.estado === 'listo');
       if (listo) partes.push(`Tu pedido de ${listo.nombre} ya está listo para retirar.`);
+      // Lo personal primero: las ofertas que la IA preparó hoy para este cliente
+      const ofertas = (await this.saber.ofertasHoy(c.clienteId)).filter((o) => o.estado === 'activa' && !o.paso);
+      if (ofertas[0]) {
+        const o = ofertas.find((x) => x.ahora) ?? ofertas[0];
+        ofertaLocal = o.local_id;
+        partes.push(`Hoy tienes ${ofertas.length === 1 ? 'una oferta' : `${ofertas.length} ofertas`} solo para ti, como puntos por ${Number(o.multiplicador)} en ${o.local} ${o.ahora ? `ahora mismo, hasta ${horaVoz(o.hora_fin)}` : `desde ${horaVoz(o.hora_inicio)}`}.`);
+      }
     }
     const promos = (await this.saber.promociones(c.recintoId, c.clienteId)).filter((p) => p.ahora);
     const eventos = (await this.saber.eventos(c.recintoId, new Date(), finDelDia())).filter((e) => e.en_curso || new Date(e.inicio) > new Date());
     if (eventos[0]) partes.push(`Hoy hay ${eventos.length === 1 ? 'un evento' : `${eventos.length} eventos`}, como ${eventos[0].titulo} ${eventos[0].en_curso ? 'ahora mismo' : `a ${horaVoz(hhmmBo(eventos[0].inicio))}`}.`);
-    else if (promos[0]) partes.push(`Ahora mismo hay ${promos.length === 1 ? 'una promoción activa' : `${promos.length} promociones activas`}, como ${promos[0].titulo}${promos[0].local ? ` en ${promos[0].local}` : ''}.`);
+    else if (promos[0] && !ofertaLocal) partes.push(`Ahora mismo hay ${promos.length === 1 ? 'una promoción activa' : `${promos.length} promociones activas`}, como ${promos[0].titulo}${promos[0].local ? ` en ${promos[0].local}` : ''}.`);
     partes.push('¿En qué te ayudo?');
     return {
       texto: partes.join(' '),
       reescribir: false,
-      sugerencias: ['¿Qué promociones hay ahora?', '¿Qué eventos hay hoy?', '¿Dónde gano más puntos?', '¿Cómo va mi pedido?'],
+      entidades: { localId: ofertaLocal },
+      sugerencias: ['¿Qué ofertas tengo hoy?', '¿Qué me recomiendas?', '¿Qué eventos hay hoy?', '¿Cómo va mi pedido?'],
     };
   }
 
@@ -432,6 +447,10 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   private async oportunidades(c: Ctx): Promise<Borrador> {
     const partes: string[] = [];
+    if (c.clienteId) {
+      const ofertas = (await this.saber.ofertasHoy(c.clienteId)).filter((o) => o.estado === 'activa' && !o.paso);
+      if (ofertas.length) partes.push(`Lo mejor para ti: tus ofertas personales de hoy, ${lista(ofertas.map((o) => `por ${Number(o.multiplicador)} en ${o.local} ${o.ahora ? 'ahora' : `desde ${horaVoz(o.hora_inicio)}`}`))}.`);
+    }
     const promos = (await this.saber.promociones(c.recintoId, c.clienteId)).filter((p) => p.ahora && p.tipo === 'puntos_dobles');
     if (promos.length) partes.push(`Ahora hay puntos multiplicados en ${lista(promos.slice(0, 3).map((p) => `${p.local ?? 'todo el Paseo'} (por ${Number(p.multiplicador)})`))}.`);
     let ar: Borrador['ar'];
@@ -464,7 +483,8 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const local = c.ent.locales[0] ?? (/\b(ahi|ese|esa|alli)\b/.test(c.t) && c.mem.localId ? { id: c.mem.localId, nombre: '' } : null);
     const categoria = !local ? c.ent.categoria : null;
     const todas = await this.saber.promociones(c.recintoId, c.clienteId, { localId: local?.id, categoria: categoria ?? undefined });
-    const ahora = todas.filter((p) => p.ahora);
+    // Primero lo que le interesa y lo que equilibra el flujo, no siempre los mismos locales
+    const ahora = await this.recomendador.ordenar(c.recintoId, c.clienteId, todas.filter((p) => p.ahora));
     const luego = todas.filter((p) => p.mas_tarde_hoy);
     const nombreDe = (p: any) => `${p.titulo}${p.local ? ` en ${p.local}` : ''}${p.tipo === 'cupon' && p.descripcion ? ` (${p.descripcion.charAt(0).toLowerCase() + p.descripcion.slice(1)})` : ''}`;
     const filtro = local ? (local.nombre ? ` en ${local.nombre}` : ' ahí') : categoria ? ` de ${categoria.toLowerCase()}` : '';
@@ -479,6 +499,10 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       const dias = (p.dias_semana as number[]).map((d) => ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'][d]);
       texto = `Hoy no hay promociones activas${filtro}. La próxima es ${p.titulo}${p.local ? ` en ${p.local}` : ''}, los ${lista(dias)} de ${horaVoz(p.hora_inicio)} a ${horaVoz(p.hora_fin)}.`;
     } else texto = `No hay promociones vigentes${filtro} por ahora. Si quieres, te aviso de los eventos de hoy.`;
+    if (c.clienteId && !local) {
+      const mia = (await this.saber.ofertasHoy(c.clienteId)).find((o) => o.estado === 'activa' && !o.paso);
+      if (mia) texto += ` Y solo para ti: puntos por ${Number(mia.multiplicador)} en ${mia.local} ${mia.ahora ? `hasta ${horaVoz(mia.hora_fin)}` : `desde ${horaVoz(mia.hora_inicio)}`}.`;
+    }
     const primera = ahora[0] ?? luego[0];
     return {
       texto,
@@ -814,38 +838,48 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   }
 
   private async recomendacion(c: Ctx): Promise<Borrador> {
-    const { hhmm } = ahoraBolivia();
-    const hora = Number(hhmm.slice(0, 2));
     const quiere = /(hambre|comer|comida|almorz|cenar|desayun|antojo|dulce|postre|sed|beber|tomar)/.test(c.t) ? 'Comida' : /(regalo|regalar|cumple)/.test(c.t) ? 'Regalos' : /(aburrid|que hago|diversion|divertir|jugar)/.test(c.t) ? 'Entretenimiento' : c.ent.categoria;
     if (quiere === 'Entretenimiento' || (!quiere && /(que hago|aburrid)/.test(c.t))) {
       const ev = (await this.saber.eventos(c.recintoId, new Date(), finDelDia()))[0];
       if (ev) return { texto: `${ev.en_curso ? 'Ahora mismo hay' : `Hoy a ${horaVoz(hhmmBo(ev.inicio))} hay`} ${ev.titulo} en ${ev.lugar}${ev.puntos ? `, y ganas ${ev.puntos} puntos por ir` : ''}. También están el cine y el boliche en las Terrazas.`, reescribir: false, entidades: { actividadId: ev.id }, eventos: [ev] };
     }
-    const favoritos = c.clienteId ? await this.saber.favoritos(c.clienteId) : [];
-    const sub = /dulce|postre/.test(c.t) ? '(postre|torta|helado|cupcake|cheesecake|alfajor|dulce|chocolate)' : /sed|beber|tomar/.test(c.t) ? '(jugo|batido|cafe|capuchino|limonada|te |smoothie)' : null;
-    const candidatos = await many<any>(
-      this.db,
-      `select l.id, l.nombre, l.piso, l.numero_local, l.horario_apertura, l.horario_cierre, c.nombre as categoria,
-              (select p.nombre from producto p where p.local_id = l.id and p.activo and p.stock > 0 and ($3::text is null or lower(p.nombre) ~ $3) order by p.precio_bs limit 1) as producto,
-              (select p.precio_bs from producto p where p.local_id = l.id and p.activo and p.stock > 0 and ($3::text is null or lower(p.nombre) ~ $3) order by p.precio_bs limit 1) as precio
-       from local l join categoria c on c.id = l.categoria_id
-       where l.recinto_id = $1 and l.activo and ($2::text is null or c.nombre = $2) and $4::time between l.horario_apertura and l.horario_cierre`,
-      [c.recintoId, quiere ?? null, sub, hhmm],
-    );
-    const conProducto = candidatos.filter((x) => x.producto);
-    const promos = (await this.saber.promociones(c.recintoId, c.clienteId, { categoria: quiere ?? undefined })).filter((p) => p.ahora && p.local_id);
-    const fav = new Set(favoritos.map((f) => f.id));
-    const elegido =
-      conProducto.find((x) => promos.some((p) => p.local_id === x.id)) ?? conProducto.find((x) => fav.has(x.id)) ?? conProducto[Math.floor((hora * 7) % Math.max(1, conProducto.length))];
-    if (!elegido) return this.promociones(c);
-    const promo = promos.find((p) => p.local_id === elegido.id);
-    const otro = conProducto.find((x) => x.id !== elegido.id && fav.has(x.id));
+    const sub = /dulce|postre/.test(c.t) ? '(postre|torta|helado|cupcake|cheesecake|alfajor|brownie|dulce|chocolate|banana)' : /sed|beber|tomar/.test(c.t) ? '(jugo|batido|cafe|capuchino|limonada|te |smoothie|espresso|latte)' : null;
+    // Recomendador equitativo: gusto del cliente + reparto justo del flujo entre competidores
+    const recs = await this.recomendador.recomendar(c.recintoId, c.clienteId, { categoria: quiere ?? null, productoRegex: sub, limite: 2 });
+    if (!recs.length) return this.promociones(c);
+    const [r, otra] = recs;
+    const l = r.local;
+    const motivos = r.motivos.length ? `: ${lista(r.motivos.slice(0, 2))}` : '';
+    const producto = r.producto ? ` ${r.producto.nombre} cuesta ${dinero(r.producto.precio_bs)}.` : '';
+    const alternativa = otra ? ` Otra buena opción es ${otra.local.nombre}${otra.motivos[0] ? `, ${otra.motivos[0]}` : ''}.` : '';
     return {
-      texto: `Te recomiendo ${elegido.nombre}, en ${JarvisService.ubicacion(elegido)}${promo ? `, que ahora tiene ${promo.titulo}` : fav.has(elegido.id) ? ', uno de tus favoritos' : ''}: ${elegido.producto} cuesta ${dinero(elegido.precio)}.${otro ? ` Si prefieres, ${otro.nombre} también está abierto.` : ''} ¿Te llevo?`,
-      claves: [elegido.nombre],
-      entidades: { localId: elegido.id },
-      propuesta: { intencion: 'donde', entidades: { localId: elegido.id } },
-      sugerencias: [`¿Cómo llego a ${elegido.nombre}?`, '¿Qué otras promociones hay?'],
+      texto: `Te recomiendo ${l.nombre}, en ${JarvisService.ubicacion(l)}${motivos}.${producto}${alternativa} ¿Te llevo?`,
+      claves: [l.nombre],
+      reescribir: false,
+      entidades: { localId: l.id },
+      propuesta: { intencion: 'donde', entidades: { localId: l.id } },
+      sugerencias: [`¿Cómo llego a ${l.nombre}?`, ...(otra ? [`¿Y ${otra.local.nombre}?`] : []), '¿Qué ofertas tengo hoy?'],
+    };
+  }
+
+  private async ofertas(c: Ctx): Promise<Borrador> {
+    if (!c.clienteId) return this.sinSesion();
+    const os = await this.saber.ofertasHoy(c.clienteId);
+    if (!os.length) return { texto: 'Hoy no tienes ofertas personales. Cada mañana preparo nuevas según lo que te gusta; mientras tanto, te cuento las promociones del Paseo.', reescribir: false, propuesta: { intencion: 'promociones', entidades: {} } };
+    const vigentes = os.filter((o) => o.estado === 'activa' && !o.paso);
+    const usadas = os.filter((o) => o.estado === 'usada');
+    const f = (o: any) => `puntos por ${Number(o.multiplicador)} en ${o.local} ${o.ahora ? `ahora mismo, hasta ${horaVoz(o.hora_fin)}` : `de ${horaVoz(o.hora_inicio)} a ${horaVoz(o.hora_fin)}`}`;
+    const partes = [];
+    if (vigentes.length) partes.push(`Hoy tienes ${vigentes.length === 1 ? 'una oferta' : `${vigentes.length} ofertas`} solo para ti: ${lista(vigentes.map(f))}.`);
+    if (usadas.length) partes.push(`Ya aprovechaste ${usadas.length === 1 ? 'una' : usadas.length} y ganaste ${usadas.reduce((a, o) => a + o.puntos_bono, 0)} puntos extra.`);
+    if (!vigentes.length && !usadas.length) partes.push('Tus ofertas de hoy ya terminaron; mañana tendrás nuevas.');
+    if (vigentes[0]) partes.push(vigentes[0].motivo);
+    return {
+      texto: partes.join(' '),
+      reescribir: false,
+      entidades: { localId: vigentes[0]?.local_id },
+      propuesta: vigentes[0] ? { intencion: 'donde', entidades: { localId: vigentes[0].local_id } } : undefined,
+      sugerencias: vigentes[0] ? [`¿Cómo llego a ${vigentes[0].local}?`, '¿Qué más me recomiendas?'] : ['¿Qué promociones hay ahora?'],
     };
   }
 
