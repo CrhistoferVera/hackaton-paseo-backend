@@ -1,8 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Db, Queryable, many, one } from '../../infra/db/db.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { AuditoriaService, NotificacionesService } from '../nucleo/nucleo.services.js';
 import { ExperienciasService } from './experiencias.service.js';
+import { EventBus } from '../nucleo/event-bus.js';
+import { FidelizacionService } from '../fidelizacion/fidelizacion.service.js';
 
 export interface DatosActividad {
   titulo: string;
@@ -32,13 +34,44 @@ export interface DatosSolicitudDrop {
  * Un comercio propone; administración o marketing aprueba. Así la app y Jarvis solo muestran lo aprobado.
  */
 @Injectable()
-export class EventosService {
+export class EventosService implements OnModuleInit {
+  private readonly log = new Logger('Eventos');
+
   constructor(
     private readonly db: Db,
     private readonly notif: NotificacionesService,
     private readonly auditoria: AuditoriaService,
     private readonly exp: ExperienciasService,
+    private readonly bus: EventBus,
+    private readonly fidelizacion: FidelizacionService,
   ) {}
+
+  /** Asistencia: escanear la puerta del local anfitrión o el cartel de la zona durante el evento. */
+  onModuleInit() {
+    this.bus.on('checkin.registrado', (e) => this.registrarAsistencia(e.recintoId, e.clienteId, { localId: e.localId }).catch((x) => this.log.warn(x.message)));
+    this.bus.on('hito.reclamado', (e) => this.registrarAsistencia(e.recintoId, e.clienteId, { hitoId: e.hitoId }).catch((x) => this.log.warn(x.message)));
+  }
+
+  async registrarAsistencia(recintoId: string, clienteId: string, donde: { localId?: string; hitoId?: string }) {
+    const evs = await many<any>(
+      this.db,
+      `select a.id, a.titulo, a.puntos from actividad a
+       where a.recinto_id = $1 and a.estado = 'aprobada' and now() between a.inicio - interval '15 minutes' and a.fin
+         and (a.local_id = $2::uuid or a.zona_id = (select zona_id from hito where id = $3::uuid))
+         and not exists (select 1 from asistencia_actividad x where x.actividad_id = a.id and x.cliente_id = $4)`,
+      [recintoId, donde.localId ?? null, donde.hitoId ?? null, clienteId],
+    );
+    for (const ev of evs) {
+      await this.db.tx(async (q) => {
+        const r = await one(q, 'insert into asistencia_actividad (actividad_id, cliente_id, puntos) values ($1,$2,$3) on conflict do nothing returning actividad_id', [ev.id, clienteId, ev.puntos]);
+        if (!r) return;
+        if (ev.puntos > 0) {
+          await this.fidelizacion.acreditar(q, { recintoId, clienteId, tipo: 'bono', puntos: ev.puntos, referenciaId: ev.id, descripcion: `Asististe a ${ev.titulo}` });
+        }
+        await this.notif.crear(q, clienteId, 'evento', `¡Gracias por venir a ${ev.titulo}!`, ev.puntos > 0 ? `Sumaste ${ev.puntos} puntos por asistir.` : 'Registramos tu asistencia.', { actividadId: ev.id });
+      });
+    }
+  }
 
   // ------------------------------------------------------------------ eventos
 

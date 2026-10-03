@@ -738,6 +738,19 @@ create table conversacion_jarvis (
 create index conversacion_cliente_idx on conversacion_jarvis (cliente_id, creado_en desc);
 `,
   },
+  {
+    id: '006_asistencia_eventos',
+    sql: /* sql */ `
+-- participacion: asistencia a eventos (escanear un QR del lugar mientras el evento está en curso)
+create table asistencia_actividad (
+  actividad_id uuid not null references actividad(id) on delete cascade,
+  cliente_id uuid not null references usuario(id) on delete cascade,
+  puntos int not null default 0,
+  creado_en timestamptz not null default now(),
+  primary key (actividad_id, cliente_id)
+);
+`,
+  },
 ];
 
 /** Tablas propias del sistema: el reinicio del seed borra solo estas, nunca otras de la misma base. */

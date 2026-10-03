@@ -141,7 +141,7 @@ export class CerebroJarvis implements OnModuleInit {
       if (!(await m.disponible())) continue;
       const r = await m.generar(chat ? SISTEMA_CHAT : SISTEMA_JARVIS, prompt, { maxTokens: chat ? 130 : 90, timeoutMs: this.timeoutMs });
       const texto = r ? CerebroJarvis.limpiar(r, chat ? 3 : 2) : null;
-      if (texto && claves.every((c) => CerebroJarvis.normalizar(texto).includes(CerebroJarvis.normalizar(c))) && CerebroJarvis.mismosNumeros(borrador, texto) && !CerebroJarvis.primeraPersonaNueva(borrador, texto)) {
+      if (texto && claves.every((c) => CerebroJarvis.normalizar(texto).includes(CerebroJarvis.normalizar(c))) && CerebroJarvis.mismosNumeros(borrador, texto) && !CerebroJarvis.primeraPersonaNueva(borrador, texto) && !CerebroJarvis.agregaSaludo(borrador, texto) && texto.length <= borrador.length * 1.5 + 30) {
         return { texto, motor: m.nombre, latenciaMs: Date.now() - t0 };
       }
     }
@@ -193,13 +193,21 @@ export class CerebroJarvis implements OnModuleInit {
     return (limpio(texto).match(verbos) ?? []).some((v) => !enBorrador.has(v));
   }
 
+  /** «¡Hola, cliente!» a mitad de la conversación suena robótico: se descarta. */
+  static agregaSaludo(borrador: string, texto: string) {
+    const n = (x: string) => CerebroJarvis.normalizar(x);
+    const saludo = /\b(hola|bienvenid[oa]|buenas)\b/;
+    const cliente = /\bcliente\b/;
+    return (saludo.test(n(texto)) && !saludo.test(n(borrador))) || (cliente.test(n(texto)) && !cliente.test(n(borrador)));
+  }
+
   static normalizar(s: string) {
     return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   }
 
   /** Quita adornos y corta a pocas oraciones (se escucha mientras se camina). */
   static limpiar(s: string, maxOraciones = 2) {
-    const t = s.replace(/[*_#>"“”]/g, '').replace(/\p{Extended_Pictographic}/gu, '').replace(/\s+/g, ' ').trim();
+    const t = s.replace(/^\s*(jarvis|respuesta|asistente)\s*:\s*/i, '').replace(/[*_#>"“”]/g, '').replace(/\p{Extended_Pictographic}/gu, '').replace(/\s+/g, ' ').trim();
     const oraciones = t.match(/[^.!?]+[.!?]+/g) ?? [t];
     return oraciones.slice(0, maxOraciones).map((o) => o.trim()).join(' ');
   }

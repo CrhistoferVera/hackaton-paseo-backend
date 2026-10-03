@@ -3,17 +3,17 @@
 Backend de Paseo Points para Paseo Aranjuez: programa de puntos, PaseoYa (marketplace con retiro presencial) y Centro de Inteligencia. NestJS 12 + PostgreSQL.
 
 Repositorios hermanos:
-- `hackaton-paseo-frontend-web`: portal de locales (cajero, gerente) y Centro de Inteligencia (admin, marketing, analista).
+- `hackaton-paseo-frontend-web`: panel de comercio (una cuenta por negocio) y Centro de Inteligencia (admin, marketing, analista).
 - `hackaton-paseo-frontend-mobile`: app del cliente (Expo).
 
 ## Puesta en marcha
 
-Requiere Node.js 22 o superior.
+Requiere Node.js 22 o superior y PostgreSQL 14 o superior. La guía completa para levantar los tres repositorios está en `../COMO-CORRER.md`.
 
 ```bash
 npm install
-cp .env.example .env
-npm run seed
+cp .env.example .env          # pon tu DATABASE_URL
+npm run seed -- --reset
 npm run start:dev
 ```
 
@@ -21,16 +21,23 @@ La API queda en `http://localhost:4000`.
 
 ### Base de datos
 
-- **Postgres** (Neon, Railway, Supabase o local): define `DATABASE_URL` en `.env`. Las migraciones se aplican solas al arrancar.
-- **Sin `DATABASE_URL`**: usa PGlite, un Postgres real que corre dentro de Node, con los datos en `.data/pgdata`. No hay que instalar nada.
+- **Postgres** (local, Laragon, Neon, Supabase, Railway): define `DATABASE_URL` en `.env`, por ejemplo `postgres://postgres@localhost:5432/paseo_points`. Las migraciones se aplican solas al arrancar o al sembrar.
+- **Sin `DATABASE_URL`**: usa PGlite (Postgres embebido en `.data/pgdata`), solo para pruebas rápidas; admite un proceso a la vez.
 
-PGlite admite un solo proceso a la vez. Detén la API antes de correr `npm run seed`.
+`npm run seed -- --reset` borra **solo las tablas del sistema** (la base puede compartirse con otras aplicaciones) y vuelve a generar.
 
 ### Datos sintéticos
 
-`npm run seed` genera unos 3 meses de actividad: 40 locales ubicados en el plano, 2.000 clientes con perfiles distintos (oficinistas al mediodía, familias de fin de semana, jóvenes de tarde, ocasionales, dormidos), visitas, compras, canjes, pedidos PaseoYa, búsquedas sin resultado y casos de fraude plantados. Al final calcula los segmentos con K-Means y entrena el modelo de anomalías.
+`npm run seed` genera unos 4 meses de actividad para probar el sistema y a Jarvis:
+- 40 locales con horario, días de atención y teléfono; 216 productos con precio, stock y tiempo de preparación.
+- Una cuenta de comercio por local.
+- 21 servicios del Paseo (baños, cajeros automáticos, wifi, lactancia, enfermería, objetos perdidos, mascotas…), que también son destinos de ruta.
+- 19 promociones repartidas para que a toda hora haya alguna activa, y unos 195 eventos (recurrentes y especiales) entre 30 días atrás y 45 adelante, con uno siempre en curso.
+- 2.500 clientes con perfiles distintos (oficinistas al mediodía, familias de fin de semana, jóvenes de tarde, ocasionales, dormidos): visitas, compras, canjes, PaseoYa, parqueo, monedas AR, Drops, búsquedas sin resultado y fraude plantado.
+- Solicitudes de Drop y propuestas de eventos pendientes.
+- María (la clienta demo) con un pedido listo, otro en preparación, el parqueo abierto y un cupón vigente.
 
-`npm run seed -- --reset` borra todo y vuelve a generar.
+Al final calcula los segmentos con K-Means, entrena el modelo de anomalías y arma el grafo del edificio.
 
 ### Cuentas de prueba (solo desarrollo)
 
@@ -39,8 +46,7 @@ PGlite admite un solo proceso a la vez. Detén la API antes de correr `npm run s
 | Administración | `admin@paseo.bo` | `Admin2026!` |
 | Marketing | `marketing@paseo.bo` | `Marketing2026!` |
 | Analista | `analista@paseo.bo` | `Analista2026!` |
-| Gerente de local | `gerente.<local>@paseo.bo` (por ejemplo `gerente.cafealameda@paseo.bo`) | `Gerente2026!` |
-| Cajero | `cajero.<local>@paseo.bo` | `Cajero2026!` |
+| Comercio (una cuenta por local) | `comercio.<local>@paseo.bo` (por ejemplo `comercio.napolipizzeria@paseo.bo`) | `Comercio2026!` |
 | Cliente demo (María Rojas) | `70000001` | `Maria2026!` |
 
 Los roles internos ingresan con doble factor. En desarrollo (`OTP_EN_RESPUESTA=true`) el código viene en la respuesta del login porque no hay proveedor de SMS ni de correo.
@@ -84,7 +90,7 @@ Decisiones que sostienen los requisitos no funcionales:
 
 | Prefijo | Qué es | Quién lo escanea |
 | --- | --- | --- |
-| `PP1:<código>:<totp>` | Pase del cliente | Cajero |
+| `PP1:<código>:<totp>` | Pase del cliente | Comercio |
 | `PPC:<código>.<firma>` | Cupón de canje (15 min) | Local |
 | `PPR:<código>.<firma>` (o PIN de 4 dígitos) | Retiro PaseoYa | Local |
 | `PPL:<código>` | Puerta de un local | Cliente (check-in) |
@@ -128,6 +134,32 @@ ollama pull qwen2.5:1.5b
 La API calienta el modelo al arrancar y lo mantiene en memoria 30 minutos. Sin Ollama, Jarvis funciona igual con las plantillas.
 
 El celular también puede mandar eventos por el socket: `evento_usuario` con `escaneo_qr`, `espera_comida` o `pregunta`. La identidad se toma de la sesión del socket. Para ver qué está diciendo Jarvis, el motor y la latencia de cada orden, abre `/admin/jarvis` en el portal web.
+
+### Jarvis conversacional (con memoria y datos en tiempo real)
+
+`POST /cliente/jarvis` responde preguntas con datos consultados en el momento: promociones activas o de más tarde, eventos (hoy, mañana, fin de semana), precios y stock, tiempos de preparación, horarios y si un local está abierto, puntos que ganarías con un monto, dónde ganar más puntos, misiones, Drops, parqueo, pedidos PaseoYa, servicios (baños, cajeros automáticos, wifi, lactancia, enfermería, objetos perdidos, mascotas) y rutas.
+
+- **Memoria** (`conversacion_jarvis`): entiende seguimientos como «¿y cuánto tarda?», «¿y la óptica?» o «sí, llévame». La conversación vive 45 minutos sin hablar; `GET /cliente/jarvis/historial` la retoma y `POST /cliente/jarvis/reiniciar` empieza otra.
+- **Cómo entiende:** reglas, un índice de nombres del Paseo que tolera errores del reconocedor («napoly» → Napoli) y, si nada encaja, el modelo local clasifica.
+- **Cómo responde:** cada respuesta se arma con datos reales y el modelo local solo la vuelve natural; si cambia una cifra, agrega un saludo o se alarga, se usa la respuesta original.
+- **Preguntas poco comunes:** se responden solo con los datos del Paseo; si el modelo menciona una cifra que no está en los datos, se descarta.
+
+### Jarvis escucha (voz a texto local)
+
+`POST /cliente/jarvis/voz` (multipart, campo `audio`) recibe lo que grabó el celular o el navegador (webm, m4a, ogg, wav). ffmpeg lo decodifica y Whisper (`onnx-community/whisper-small` sobre ONNX, en el propio servidor) lo transcribe en unos 2 a 3 segundos. Si se pide, Jarvis responde en la misma llamada.
+
+El audio no se guarda ni sale de la máquina. El modelo se descarga una vez a `.data/modelos`. Se reemplazó el reconocedor del navegador, que enviaba el audio a Google y fallaba con «Network».
+
+### Panel de comercio
+
+Una cuenta `comercio` por negocio, que reemplaza a cajero y gerente:
+- Caja, cupones y pedidos.
+- Productos PaseoYa (crear, editar, eliminar, stock, tiempo de preparación, etiquetas).
+- Promociones (crear, retirar, terminar).
+- **Solicitudes de Drop:** `/local/drops`; el admin las aprueba y lanza en `/admin/drops/solicitudes`.
+- **Eventos propuestos:** `/local/eventos`; el admin los aprueba en `/admin/eventos`.
+
+Quien escanea un QR del lugar mientras un evento está en curso suma sus puntos de asistencia una sola vez.
 
 ### Jarvis Paseo (API para integraciones)
 

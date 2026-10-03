@@ -150,11 +150,26 @@ export class ConocimientoPaseo {
       .sort((a, b) => b.s - a.s || a.p.precio - b.p.precio);
     const mejor = productos[0]?.s ?? 0;
 
-    const servicio = idx.servicios.find((s) => s.claves.some((k) => ` ${t} `.includes(` ${k} `) || (k.length >= 6 && parecida(k)))) ?? null;
+    // Un servicio coincide si la frase contiene todas las palabras de una de sus claves («cargar mi celular» ⊇ «cargar celular»)
+    const contiene = (k: string) => {
+      const ws = k.split(" ").filter((w) => w.length >= 3);
+      return ` ${t} `.includes(` ${k} `) || (ws.length > 1 && ws.every((w) => parecida(singular(w))));
+    };
+    const servicio = idx.servicios.find((s) => s.claves.some(contiene)) ?? null;
     const actividad =
       idx.actividades.map((a) => ({ a, s: a.tokens.filter(parecida).length / Math.max(1, a.tokens.length) })).filter((x) => x.s >= 0.5).sort((a, b) => b.s - a.s)[0]?.a ?? null;
     const categoria = Object.entries(CATEGORIAS).find(([, sin]) => sin.some((k) => ` ${t} `.includes(` ${k} `)))?.[0] ?? null;
 
+    // «la farmacia», «la óptica», «el cine»: el rubro identifica al local cuando hay uno solo
+    if (!locales.length && !productos.length) {
+      for (const w of sing.filter((x) => x.length >= 4)) {
+        const ls = idx.locales.filter((l) => l.claves.some((k) => singular(k) === w));
+        if (ls.length === 1) {
+          locales.push(ls[0]);
+          break;
+        }
+      }
+    }
     return { locales, productos: productos.filter((x) => x.s === mejor).map((x) => x.p).slice(0, 8), servicio, actividad, categoria };
   }
 
@@ -243,7 +258,7 @@ export class ConocimientoPaseo {
   dropsActivos(recintoId: string) {
     return many<any>(
       this.db,
-      `select d.id, d.precio_especial, d.mensaje, d.fin, z.nombre as zona, z.piso, p.nombre as producto, p.precio_bs, l.nombre as local, h.id as hito_id, h.codigo,
+      `select d.id, d.precio_especial, d.mensaje, d.fin, z.nombre as zona, z.piso, p.id as producto_id, p.nombre as producto, p.precio_bs, l.nombre as local, h.id as hito_id, h.codigo,
               d.max_reclamos - (select count(*)::int from reclamo_drop r where r.drop_id = d.id) as quedan
        from drop_espacial d join zona z on z.id = d.zona_id join producto p on p.id = d.producto_id join local l on l.id = p.local_id
        left join hito h on h.zona_id = d.zona_id and h.activo

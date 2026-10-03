@@ -10,7 +10,7 @@ import { CerebroJarvis } from '../jarvis/cerebro.js';
 import { OrquestadorJarvis } from '../jarvis/orquestador.service.js';
 import { ConocimientoPaseo, type Encontrado, normalizar } from '../jarvis/conocimiento.service.js';
 import { type Entidades, MemoriaJarvis, type Turno } from '../jarvis/memoria.service.js';
-import { de, diaVoz, dinero, duracionVoz, fechaVoz, hhmmBo, horaVoz, lista } from '../jarvis/voz.js';
+import { de, diaVoz, dinero, duracionVoz, fechaVoz, hhmmBo, horaVoz, lista, lugar } from '../jarvis/voz.js';
 
 export type Intencion =
   | 'saludo' | 'gracias' | 'ayuda' | 'reinicio' | 'afirmacion'
@@ -115,7 +115,14 @@ export class JarvisService {
 
   async consultar(recintoId: string, clienteId: string | null, pregunta: string): Promise<RespuestaJarvis> {
     const t0 = Date.now();
-    const original = pregunta.trim().replace(/^(oye |hola )?jarvis[\s,:]*/i, '');
+    // Se quita el vocativo («oye Jarvis», «…, Jarvis») pero no el saludo
+    const original =
+      pregunta
+        .trim()
+        .replace(/^(oye\s+)?jarvis[\s,:!¡]*/i, '')
+        .replace(/^(hola|buenas|hey)[\s,]+jarvis\b[\s,:!]*/i, '$1 ')
+        .replace(/[\s,]+jarvis[\s?!.]*$/i, '')
+        .trim() || 'hola';
     const t = normalizar(original);
     const hilo = clienteId ? await this.memoria.hilo(clienteId) : [];
     const mem = this.memoria.contexto(hilo);
@@ -178,7 +185,7 @@ export class JarvisService {
     if (palabras <= 5 && r(/^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|hey|que tal|como estas)\b/)) return 'saludo';
     if (palabras <= 6 && r(/^(gracias|muchas gracias|mil gracias|genial|excelente|perfecto gracias|ok gracias|listo|no gracias|nada mas|chau|chao|adios|hasta luego|nos vemos)\b/)) return 'gracias';
     if (r(/(olvida (todo|eso)|empecemos de nuevo|nueva conversacion|borra (la|esta) conversacion)/)) return 'reinicio';
-    if (r(/(quien eres|que eres|que puedes hacer|que sabes hacer|en que me (puedes )?ayudar|como funcionas|para que sirves|^ayuda$)/)) return 'ayuda';
+    if (r(/(quien eres|que eres|que puedes hacer|que sabes hacer|en que me (puedes )?ayudar|como funcionas|para que sirves|^ayuda$|que es paseo points|como funciona (paseo points|el programa|los puntos)|como funcionan los puntos)/)) return 'ayuda';
 
     // pedidos PaseoYa
     const habla = (re: RegExp) => r(re);
@@ -201,7 +208,7 @@ export class JarvisService {
     if (habla(/\bdrops?\b|caja sorpresa|relampago/)) return 'drops';
 
     if (habla(/(promo|oferta|descuento|2x1|dos por uno|rebaja|liquidacion)/) && !habla(/(cerca de mi|por aqui|aqui cerca)/)) return 'promociones';
-    if (ent.actividad || habla(/\b(evento|eventos|concierto|conciertos|feria|ferias|taller|talleres|show|shows|espectaculo|actividad|actividades|que hay (hoy|manana|este fin)|que hacer|presentacion)\b/)) return 'eventos';
+    if (ent.actividad || habla(/\b(evento|eventos|concierto|conciertos|feria|ferias|taller|talleres|show|shows|espectaculo|actividad|actividades|que hacer|presentacion)\b/) || habla(/que (hay|hacer|planes)( para)? (hoy|manana|esta noche|esta tarde|(este |el )?fin de semana|el sabado|el domingo)/)) return 'eventos';
     if (habla(/(parqueo|estacionamiento|parking|estacionar|mi auto|mi carro|mi vehiculo)/)) return 'parqueo';
     if (habla(/(cuanto (tarda|demora|se tarda|se demora)|tiempo de preparacion|en cuanto tiempo|cuanto tiempo)/)) return 'tiempo';
     if (habla(/(a que hora (abre|abren|cierra|cierran)|horario|esta abiert|estan abiert|sigue abiert|atiende|atienden|hasta que hora|cierra |cierran )/)) return 'horario';
@@ -212,6 +219,12 @@ export class JarvisService {
     if (habla(/(tengo hambre|que (me )?recomiendas|que como|que puedo comer|algo (dulce|rico|para comer|de comer)|recomienda|sugerencia|antojo|regalo para|que le regalo|aburrido|que hago|que me sugieres|tengo sed)/)) return 'recomendacion';
     if (habla(/(que venden|que tiene|que hay en|informacion de|telefono|numero de|de que es|que es)/) && ent.locales.length) return 'local_info';
     if (habla(/\b(busca|buscame|encuentra|quiero comprar|necesito|venden|tienen|vende)\b/)) return 'producto';
+
+    // «¿Y la óptica?», «¿y en Napoli?»: misma pregunta que la anterior, sobre otra cosa
+    const anterior = [...c.hilo].reverse().find((x) => x.rol === 'cliente')?.intencion as Intencion | undefined;
+    if (palabras <= 5 && /^(y|e|y en|y el|y la|y los|y las|y para)\b/.test(t) && anterior && ['horario', 'precio', 'tiempo', 'donde', 'local_info', 'promociones', 'servicio'].includes(anterior)) {
+      if (ent.locales.length || ent.productos.length || ent.servicio) return ent.servicio && !ent.locales.length ? 'servicio' : anterior === 'servicio' ? 'donde' : anterior;
+    }
 
     // Solo entidades: «Napoli», «salteñas», «el baño»
     if (ent.productos.length) return 'producto';
@@ -249,11 +262,21 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
         texto: /(chau|chao|adios|hasta luego|nos vemos)/.test(c.t) ? `¡Que disfrutes el Paseo${c.nombre ? `, ${c.nombre}` : ''}! Aquí estoy cuando me necesites.` : `¡Con gusto${c.nombre ? `, ${c.nombre}` : ''}! Si necesitas algo más, solo pregúntame.`,
         reescribir: false,
       }),
-      ayuda: async () => ({
+      ayuda: async (c) => {
+        if (/paseo points|programa|puntos/.test(c.t)) {
+          const r = await this.fidelizacion.reglaVigente(this.db, c.recintoId);
+          return {
+            texto: `Paseo Points es el programa de puntos del Paseo Aranjuez: ganas 1 punto por cada ${Number(r.bs_por_punto) === 1 ? 'boliviano' : dinero(r.bs_por_punto)} que gastas, ${r.puntos_visita_diaria} puntos por tu primera visita del día y ${r.puntos_descubrimiento} por cada local nuevo que descubres. Los canjeas por comida, entradas, descuentos o parqueo, y duran 12 meses.`,
+            reescribir: false,
+            sugerencias: ['¿Cuántos puntos tengo?', '¿Qué puedo canjear?', '¿Dónde gano más puntos?'],
+          };
+        }
+        return {
         texto: 'Soy Jarvis, tu guía en el Paseo Aranjuez. Puedo decirte qué promociones y eventos hay, dónde está una tienda, un baño o un cajero automático, cuánto cuesta algo y cuánto tarda, cómo va tu pedido de PaseoYa y cuántos puntos tienes o puedes ganar.',
         reescribir: false,
         sugerencias: ['¿Qué promociones hay ahora?', '¿Qué eventos hay hoy?', '¿Dónde hay un baño?', '¿Cuántos puntos tengo?'],
-      }),
+        };
+      },
       reinicio: async (c) => {
         if (c.clienteId) await this.memoria.reiniciar(c.clienteId);
         return { texto: 'Listo, empezamos de nuevo. ¿En qué te ayudo?', reescribir: false };
@@ -306,7 +329,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   }
 
   private static ubicacion(l: { piso: string; numero_local: string }) {
-    return `${NOMBRE_PISO[l.piso]}, local ${l.numero_local}`;
+    return `${enPiso(l.piso).replace(/^en /, '')}, local ${l.numero_local}`;
   }
 
   // ------------------------------------------------------------------ saludo
@@ -339,7 +362,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const vence = r.porVencer[0];
     const reservado = r.reservado > 0 ? ` ${r.reservado} están reservados en cupones sin usar.` : '';
     return {
-      texto: `${c.nombre}, tienes ${r.saldo} puntos, que equivalen a ${dinero(r.valorBs)}.${reservado}${vence ? ` Ojo: ${vence.puntos} vencen el ${fechaVoz(String(vence.fecha).slice(0, 10))}.` : ''} ¿Quieres ver qué puedes canjear?`,
+      texto: `${c.nombre}, tienes ${r.saldo} puntos, que equivalen a ${dinero(r.valorBs)}.${reservado}${vence ? ` Ojo: ${vence.puntos} vencen el ${fechaVoz(vence.fecha)}.` : ''} ¿Quieres ver qué puedes canjear?`,
       propuesta: { intencion: 'canjes', entidades: {} },
       sugerencias: ['¿Qué puedo canjear?', '¿Dónde gano más puntos?', '¿Qué nivel tengo?'],
     };
@@ -366,7 +389,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const proxima = cat.recompensas.filter((r: any) => !r.puedeCanjear).sort((a: any, b: any) => a.faltan - b.faltan)[0];
     const texto = posibles.length
       ? `Con tus ${resumen.disponible} puntos disponibles puedes canjear ${lista(posibles.map((r: any) => `${r.nombre} por ${r.costo_puntos} puntos`))}.${proxima ? ` Y te faltan ${proxima.faltan} para ${proxima.nombre}.` : ''}`
-      : `Todavía no te alcanza para un canje: tienes ${resumen.disponible} puntos.${proxima ? ` Te faltan ${proxima.faltan} para ${proxima.nombre}.` : ''}`;
+      : `Todavía no te alcanza para un canje: tienes ${resumen.disponible} puntos disponibles${resumen.reservado ? ` (otros ${resumen.reservado} están reservados en un cupón sin usar)` : ''}.${proxima ? ` Te faltan ${proxima.faltan} para ${proxima.nombre}.` : ''}`;
     return { texto, reescribir: false, recompensas: posibles, acciones: [{ etiqueta: 'Ver canjes', ruta: '/canjes' }], sugerencias: ['¿Dónde gano más puntos?'] };
   }
 
@@ -374,7 +397,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     if (!c.clienteId) return this.sinSesion();
     const r = await this.fidelizacion.resumen(c.clienteId, c.recintoId);
     if (!r.porVencer.length) return { texto: `Buenas noticias${c.nombre ? `, ${c.nombre}` : ''}: no tienes puntos por vencer pronto. Los puntos duran 12 meses desde que los ganas.`, reescribir: false };
-    const v = r.porVencer.slice(0, 2).map((p: any) => `${p.puntos} el ${fechaVoz(String(p.fecha).slice(0, 10))}`);
+    const v = r.porVencer.slice(0, 2).map((p: any) => `${p.puntos} el ${fechaVoz(p.fecha)}`);
     return { texto: `Se te vencen ${lista(v)}. Te conviene canjearlos antes. ¿Vemos qué puedes canjear?`, propuesta: { intencion: 'canjes', entidades: {} } };
   }
 
@@ -393,7 +416,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const local = localId ? await this.saber.local(localId) : null;
     const promo = local ? await this.saber.mejorPromo(c.recintoId, local.id, c.clienteId) : null;
     if (!Number.isFinite(monto)) {
-      const base = `Ganas 1 punto por cada ${dinero(regla.bs_por_punto)} que gastas${local ? ` en ${local.nombre}` : ''}`;
+      const base = `Ganas 1 punto por cada ${Number(regla.bs_por_punto) === 1 ? 'boliviano' : dinero(regla.bs_por_punto)} que gastas${local ? ` en ${local.nombre}` : ''}`;
       const extra = promo ? `, y ahora ${local!.nombre} tiene ${promo.titulo}, así que se multiplican por ${promo.multiplicador}` : '';
       return { texto: `${base}${extra}. Dime un monto y te calculo exacto, por ejemplo «si gasto 100 bolivianos».`, claves: local ? [local.nombre] : [], entidades: { localId: local?.id } };
     }
@@ -527,7 +550,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const d = ds[0];
     const { ruta } = d.hito_id ? await this.rutaHasta(c, `hito:${d.hito_id}`) : { ruta: undefined };
     return {
-      texto: `Hay ${ds.length === 1 ? 'un Drop activo' : `${ds.length} Drops activos`}. ${d.producto} de ${d.local} a ${dinero(d.precio_especial)} en vez de ${dinero(d.precio_bs)}, en el cartel ${de(d.zona.toLowerCase())} (${NOMBRE_PISO[d.piso]}); quedan ${d.quedan} y termina a ${horaVoz(hhmmBo(d.fin))}.${ruta ? ` Estás a ${ruta.metros} metros.` : ''}`,
+      texto: `Hay ${ds.length === 1 ? 'un Drop activo' : `${ds.length} Drops activos`}. ${d.producto} de ${d.local} a ${dinero(d.precio_especial)} en vez de ${dinero(d.precio_bs)}, en el cartel ${de(lugar(d.zona))} (${NOMBRE_PISO[d.piso]}); quedan ${d.quedan} y termina a ${horaVoz(hhmmBo(d.fin))}.${ruta ? ` Estás a ${ruta.metros} metros.` : ''}`,
       reescribir: false,
       ruta,
       ar: d.codigo ? { tipo: 'drop', codigo: `PPH:${d.codigo}`, lugar: d.zona } : undefined,
@@ -552,24 +575,36 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   // ------------------------------------------------------------------ locales, horarios, servicios, rutas
 
-  private localObjetivo(c: Ctx) {
-    return c.ent.locales[0]?.id ?? c.ent.productos[0]?.local_id ?? c.mem.localId ?? c.mem.pedidoLocalId;
+  /** Local del que se habla: el nombrado, el de un rubro («la farmacia»), el del producto o el de la conversación. */
+  private async localObjetivo(c: Ctx) {
+    if (c.ent.locales[0]) return c.ent.locales[0].id;
+    const rubro = await this.localPorRubro(c);
+    return rubro ?? c.ent.productos[0]?.local_id ?? c.mem.localId ?? c.mem.pedidoLocalId;
+  }
+
+  /** «la farmacia», «la óptica», «el cine»: si una palabra de la frase es el rubro de un solo local. */
+  private async localPorRubro(c: Ctx) {
+    for (const w of c.t.split(' ').filter((x) => x.length >= 4)) {
+      const ls = await this.saber.localesPorTermino(c.recintoId, w);
+      if (ls.length === 1 && ls[0].claves.some((k) => k === w || k === `${w}s` || `${k}s` === w)) return ls[0].id;
+    }
+    return undefined;
   }
 
   private async horario(c: Ctx): Promise<Borrador> {
-    const id = this.localObjetivo(c);
+    const id = await this.localObjetivo(c);
     if (id && !/\b(paseo|centro comercial|mall)\b/.test(c.t)) {
       const l = await this.saber.local(id);
       if (l) {
         const estado = !l.activo
-          ? 'pero ahora está cerrado temporalmente'
+          ? 'pero por ahora no está atendiendo'
           : l.abierto
             ? l.minutosParaCerrar! <= 60
               ? `y ojo, cierra en ${duracionVoz(l.minutosParaCerrar!)}`
-              : 'y ahora está abierto'
+              : 'y ahora está atendiendo'
             : !l.abiertoHoy
               ? 'pero hoy no atiende'
-              : `y ahora está cerrado`;
+              : 'y a esta hora no está atendiendo';
         return { texto: `${l.nombre} atiende de ${horaVoz(l.apertura)} a ${horaVoz(l.cierre)}, ${estado}.`, claves: [l.nombre], entidades: { localId: l.id } };
       }
     }
@@ -588,11 +623,11 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   }
 
   private async localInfo(c: Ctx): Promise<Borrador> {
-    const id = this.localObjetivo(c);
+    const id = await this.localObjetivo(c);
     if (!id) return this.libre(c);
     const l = await this.saber.local(id);
     if (!l) return this.libre(c);
-    const estado = !l.abierto ? (l.abiertoHoy ? `ahora está cerrado; abre a ${horaVoz(l.apertura)}` : 'hoy no atiende') : `ahora está abierto hasta ${horaVoz(l.cierre)}`;
+    const estado = !l.abierto ? (l.abiertoHoy ? `ahora no está atendiendo; abre a ${horaVoz(l.apertura)}` : 'hoy no atiende') : `ahora atiende hasta ${horaVoz(l.cierre)}`;
     const promo = l.promos.find((p: any) => p.ahora) ?? l.promos[0];
     const prod = l.productos[0];
     const partes = [`${l.nombre} está en ${JarvisService.ubicacion(l)}: ${l.descripcion.charAt(0).toLowerCase() + l.descripcion.slice(1)}. ${estado.charAt(0).toUpperCase() + estado.slice(1)}.`];
@@ -634,7 +669,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     return {
       texto: ruta.metros < 10
         ? `Ya estás en ${l.nombre}, ${JarvisService.ubicacion(l)}.`
-        : `${l.nombre} está en ${JarvisService.ubicacion(l)}, a ${ruta.metros} metros${desde}, unos ${ruta.minutos} minutos caminando. Primero ${JarvisService.primerPaso(ruta)}`,
+        : `${l.nombre} está en ${JarvisService.ubicacion(l)}, a ${ruta.metros} metros${desde}, ${ruta.minutos === 1 ? 'un minuto' : `unos ${ruta.minutos} minutos`} caminando. Primero ${JarvisService.primerPaso(ruta)}`,
       claves: [l.nombre],
       ruta,
       entidades: { localId },
@@ -655,16 +690,22 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       if (ruta && (!mejor.ruta || ruta.metros < mejor.ruta.metros)) mejor = { s, ruta };
     }
     const s = mejor.s;
+    // Preguntas de información, no de lugar: «¿hay wifi?», «¿puedo entrar con mi perro?»
+    if (tipo === 'wifi') return { texto: `Sí, hay wifi gratis en todo el Paseo. ${s.descripcion}`, reescribir: false, entidades: { servicioTipo: tipo } };
+    if (tipo === 'mascotas') return { texto: `${/(puedo|se puede|dejan|permiten)/.test(c.t) ? 'Sí, con condiciones. ' : ''}${s.descripcion}`, reescribir: false, entidades: { servicioTipo: tipo } };
+    const etiqueta = lista_.length > 1 ? (GENERICO[tipo] ?? `${s.nombre} más cercano`) : s.nombre;
     const donde = mejor.ruta
       ? mejor.ruta.metros < 10
         ? 'justo donde estás'
-        : `en ${NOMBRE_PISO[s.piso]}, a ${mejor.ruta.metros} metros: ${JarvisService.primerPaso(mejor.ruta)}`
-      : `en ${NOMBRE_PISO[s.piso]}`;
-    const info = s.descripcion ? ` ${s.descripcion}` : '';
+        : `${enPiso(s.piso)}, a ${mejor.ruta.metros} metros: ${JarvisService.primerPaso(mejor.ruta)}`
+      : enPiso(s.piso);
     const horario = s.horario ? ` Atiende ${s.horario}.` : '';
-    const mas = lista_.length > 1 ? ` Hay ${lista_.length} en el Paseo; te llevo al más cercano.` : '';
+    const frase =
+      tipo === 'objetos_perdidos'
+        ? `Lo siento. ${s.descripcion} Está ${donde}`
+        : `${etiqueta.charAt(0).toUpperCase() + etiqueta.slice(1)} está ${donde}${/[.!?]$/.test(donde) ? '' : '.'} ${s.descripcion}`;
     return {
-      texto: `${s.nombre.charAt(0).toUpperCase() + s.nombre.slice(1)} ${lista_.length > 1 ? 'más cercano ' : ''}está ${donde}${info.endsWith('.') || !info ? info : `${info}.`}${horario}${mas}`.replace(/\.\./g, '.'),
+      texto: `${frase.trim()}${horario}`.replace(/\.\./g, '.').replace(/([^.!?])$/, '$1.'),
       reescribir: false,
       ruta: mejor.ruta,
       entidades: { servicioTipo: tipo },
@@ -705,8 +746,11 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     if (ps.length === 1) {
       const p = ps[0];
       const stock = p.stock === 0 ? ' Ahora está agotado.' : p.stock <= 5 ? ` Quedan solo ${p.stock}.` : '';
+      const drop = (await this.saber.dropsActivos(c.recintoId)).find((d) => d.producto_id === p.id && d.quedan > 0);
+      const oferta = drop ? ` Pero ahora hay un Drop: lo consigues a ${dinero(drop.precio_especial)} en el cartel ${de(lugar(drop.zona))} hasta ${horaVoz(hhmmBo(drop.fin))}.` : '';
       return {
-        texto: `${p.nombre} cuesta ${dinero(p.precio_bs)}${p.local ? ` en ${p.local}` : ''}.${stock} ¿Quieres pedirlo por PaseoYa o que te lleve al local?`,
+        texto: `${p.nombre} cuesta ${dinero(p.precio_bs)}${p.local ? ` en ${p.local}` : ''}.${stock}${oferta} ¿Quieres pedirlo por PaseoYa o que te lleve al local?`,
+        ar: drop?.codigo ? { tipo: 'drop', codigo: `PPH:${drop.codigo}`, lugar: drop.zona } : undefined,
         claves: p.local ? [p.local] : [],
         reescribir: false,
         entidades: { productoId: p.id, localId: p.local_id },
@@ -749,8 +793,8 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   }
 
   private async tiempo(c: Ctx): Promise<Borrador> {
-    if (/\b(mi|mis) (pedido|orden|comida)\b/.test(c.t) || (!c.ent.productos.length && !c.ent.locales.length && c.clienteId && (await this.saber.pedidosAbiertos(c.clienteId)).length))
-      return this.pedidoEstado(c);
+    const sinObjeto = !c.ent.productos.length && !c.ent.locales.length && !c.mem.productoId;
+    if (/\b(mi|mis) (pedido|orden|comida)\b/.test(c.t) || (sinObjeto && c.clienteId && (await this.saber.pedidosAbiertos(c.clienteId)).length)) return this.pedidoEstado(c);
     const ps = await this.productosObjetivo(c);
     const conTiempo = ps.filter((p: any) => p.tiempo_preparacion_min != null);
     if (!conTiempo.length) {
@@ -761,9 +805,10 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const p = conTiempo[0];
     const extra = conTiempo.length > 1 ? ` ${conTiempo[1].nombre} tarda unos ${conTiempo[1].tiempo_preparacion_min} minutos.` : '';
     return {
-      texto: `${p.nombre} de ${p.local} tarda unos ${p.tiempo_preparacion_min} minutos en prepararse.${extra} Si lo pides por PaseoYa, te aviso cuando esté listo.`,
+      texto: `${p.nombre} de ${p.local} tarda unos ${p.tiempo_preparacion_min} minutos en prepararse.${extra} Si lo pides por PaseoYa, te aviso cuando esté listo. ¿Te llevo al local?`,
       reescribir: false,
       entidades: { productoId: p.id, localId: p.local_id },
+      propuesta: { intencion: 'donde', entidades: { localId: p.local_id } },
       productos: JarvisService.tarjetas(conTiempo),
     };
   }
@@ -909,6 +954,15 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     return { texto: `No tengo ese dato, pero sí puedo ayudarte con otras cosas. ${NO_ENTIENDO}`, reescribir: false, sugerencias: ['¿Qué promociones hay ahora?', '¿Qué eventos hay hoy?', '¿Dónde hay un baño?'] };
   }
 }
+
+/** «en el Nivel 1», «en las Terrazas». */
+function enPiso(piso: string) {
+  return piso === 'T' ? 'en las Terrazas' : `en el ${NOMBRE_PISO[piso]}`;
+}
+
+const GENERICO: Record<string, string> = {
+  bano: 'el baño más cercano', cajero_automatico: 'el cajero automático más cercano', carga_celular: 'la estación de carga más cercana', informacion: 'el módulo de información más cercano',
+};
 
 function inicioDelDia() {
   const bo = new Date(Date.now() - 4 * 3600_000);

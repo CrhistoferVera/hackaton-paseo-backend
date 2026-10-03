@@ -7,9 +7,11 @@ export const dinero = (n: number | string) => {
 };
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-export const fechaVoz = (iso: string) => {
-  const [, m, d] = iso.split('-').map(Number);
-  return `${d} de ${MESES[m - 1]}`;
+/** «12 de septiembre» (con el año si no es el actual). Acepta «2027-09-12» o una fecha. */
+export const fechaVoz = (f: string | Date) => {
+  const iso = f instanceof Date ? new Date(f.getTime() - 4 * 3600_000).toISOString() : String(f);
+  const [a, m, d] = iso.slice(0, 10).split('-').map(Number);
+  return `${d} de ${MESES[m - 1]}${a !== new Date().getFullYear() ? ` de ${a}` : ''}`;
 };
 
 /** «el patio de comidas» */

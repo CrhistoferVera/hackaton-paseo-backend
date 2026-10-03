@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Db, Queryable, many, one } from '../../infra/db/db.js';
 import { EventBus } from '../nucleo/event-bus.js';
 import { Arista, Nodo, Ruta, alcanzables, caminoMasCorto, construirGrafo } from './domain/grafo.js';
@@ -16,9 +16,10 @@ export const NODO_ENTRADA = 'N1:entrada:norte';
  * (QR de puerta, cartel de hito, entrada, compra o retiro): el nodo del grafo donde ocurrió.
  */
 @Injectable()
-export class OrientacionService implements OnModuleInit {
+export class OrientacionService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('Orientacion');
   private readonly cache = new Map<string, GrafoCargado>();
+  private arranque?: NodeJS.Timeout;
 
   constructor(
     private readonly db: Db,
@@ -34,7 +35,11 @@ export class OrientacionService implements OnModuleInit {
       const n = await one<{ id: string }>(this.db, `select id from nodo_ubicacion where tipo = 'entrada' and codigo_qr = $1`, [`PPE:${e.puerta ?? ''}`]);
       if (n) await this.moverA(e.clienteId, n.id, 'entrada');
     });
-    setTimeout(() => void this.asegurarGrafos().catch((e) => this.log.warn(e.message)), 1500);
+    this.arranque = setTimeout(() => void this.asegurarGrafos().catch((e) => this.log.warn(e.message)), 1500);
+  }
+
+  onModuleDestroy() {
+    clearTimeout(this.arranque);
   }
 
   private async asegurarGrafos() {
