@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, Query, UploadedFile, UseInterceptors } fro
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { ArchivoSubido } from '../../common/archivos.js';
 import { OidoJarvis } from '../jarvis/oido.service.js';
+import { VozNeuralService } from '../jarvis/voz-neural.service.js';
 import { z } from 'zod';
 import { ConApiKey, Roles, SesionActual } from '../../common/auth/auth.guard.js';
 import type { Sesion } from '../../common/auth/tokens.js';
@@ -62,11 +63,19 @@ export class JarvisClienteController {
   constructor(
     private readonly jarvis: JarvisService,
     private readonly oido: OidoJarvis,
+    private readonly sintetizador: VozNeuralService,
   ) {}
 
   @Post()
   preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(300) }))) d: { pregunta: string }) {
     return this.jarvis.consultar(s.recintoId, s.sub, d.pregunta);
+  }
+
+  /** Voz nativa en español: el servidor sintetiza el texto y la app reproduce el MP3. */
+  @Post('hablar')
+  async hablar(@Body(new ZodPipe(z.object({ texto: z.string().min(1).max(900), velocidad: z.number().min(0.7).max(1.4).optional() }))) d: { texto: string; velocidad?: number }) {
+    const r = await this.sintetizador.sintetizar(d.texto, d.velocidad);
+    return { url: `/voz/${r.id}.mp3`, segundos: r.segundos, latenciaMs: r.latenciaMs, sintesisMs: r.sintesisMs };
   }
 
   /** Conversación guardada (memoria), para retomarla al abrir la app. */

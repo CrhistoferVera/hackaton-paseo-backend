@@ -11,6 +11,9 @@ export interface Entidades {
   termino?: string;
   pedidoLocalId?: string;
   recompensaId?: string;
+  /** asistente del admin: período del que se viene hablando (hoy, semana, mes…) */
+  periodo?: string;
+  localId2?: string;
 }
 
 export interface Turno {
@@ -72,7 +75,9 @@ export class MemoriaJarvis {
   async historial(clienteId: string, limite = 40) {
     const filas = await many(
       this.db,
-      `select id, rol, texto, intencion, datos, creado_en from conversacion_jarvis where cliente_id = $1 and intencion is distinct from 'reinicio'
+      `select id, rol, texto, intencion, datos, creado_en from conversacion_jarvis
+       where cliente_id = $1 and intencion is distinct from 'reinicio'
+         and id > coalesce((select max(id) from conversacion_jarvis where cliente_id = $1 and intencion = 'reinicio'), 0)
        order by creado_en desc limit $2`,
       [clienteId, limite],
     );

@@ -751,6 +751,58 @@ create table asistencia_actividad (
 );
 `,
   },
+  {
+    id: '007_ofertas_ia_y_equidad',
+    sql: /* sql */ `
+-- ofertas: promociones personales que la IA genera cada día para cada cliente
+create table oferta_personal (
+  id uuid primary key default gen_random_uuid(),
+  recinto_id uuid not null references recinto(id),
+  cliente_id uuid not null references usuario(id) on delete cascade,
+  local_id uuid not null references local(id),
+  fecha date not null,
+  titulo text not null,
+  motivo text not null,
+  multiplicador numeric not null default 2,
+  hora_inicio time not null,
+  hora_fin time not null,
+  puntaje numeric not null default 0,
+  equidad numeric not null default 0,
+  estado text not null default 'activa' check (estado in ('activa','usada','vencida')),
+  usada_en timestamptz,
+  transaccion_id uuid references transaccion(id),
+  puntos_bono int not null default 0,
+  creado_en timestamptz not null default now(),
+  unique (cliente_id, local_id, fecha)
+);
+create index oferta_cliente_idx on oferta_personal (cliente_id, fecha);
+create index oferta_local_idx on oferta_personal (local_id, fecha);
+
+-- equidad: cada vez que Jarvis o una oferta recomienda un local (para repartir la exposición)
+create table exposicion_local (
+  id bigserial primary key,
+  recinto_id uuid not null references recinto(id),
+  local_id uuid not null references local(id),
+  cliente_id uuid references usuario(id) on delete set null,
+  fuente text not null check (fuente in ('jarvis','oferta','proactivo')),
+  creado_en timestamptz not null default now()
+);
+create index exposicion_local_idx on exposicion_local (recinto_id, creado_en);
+
+-- ajustes de la IA que administración puede cambiar
+create table ajuste_ia (
+  recinto_id uuid primary key references recinto(id),
+  ofertas_activas boolean not null default true,
+  ofertas_por_cliente int not null default 2 check (ofertas_por_cliente between 1 and 5),
+  multiplicador_max numeric not null default 3 check (multiplicador_max between 1.5 and 5),
+  peso_equidad numeric not null default 0.4 check (peso_equidad between 0 and 1),
+  hora_generacion int not null default 6 check (hora_generacion between 0 and 23),
+  ultima_generacion date,
+  actualizado_por uuid references usuario(id),
+  actualizado_en timestamptz not null default now()
+);
+`,
+  },
 ];
 
 /** Tablas propias del sistema: el reinicio del seed borra solo estas, nunca otras de la misma base. */

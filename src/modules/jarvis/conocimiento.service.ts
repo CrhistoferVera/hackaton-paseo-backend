@@ -298,6 +298,18 @@ export class ConocimientoPaseo {
     );
   }
 
+  /** Ofertas personales de hoy (las genera la IA cada mañana), con si están vigentes ahora. */
+  ofertasHoy(clienteId: string) {
+    const { fecha, hhmm } = ahoraBolivia();
+    return many<any>(
+      this.db,
+      `select o.id, o.titulo, o.motivo, o.multiplicador, o.hora_inicio::text, o.hora_fin::text, o.estado, o.puntos_bono, o.local_id, l.nombre as local,
+              ($2::time between o.hora_inicio and o.hora_fin) as ahora, ($2::time > o.hora_fin) as paso
+       from oferta_personal o join local l on l.id = o.local_id where o.cliente_id = $1 and o.fecha = $3::date order by o.hora_inicio`,
+      [clienteId, hhmm, fecha],
+    );
+  }
+
   ultimosMovimientos(clienteId: string, n = 3) {
     return many<any>(
       this.db,

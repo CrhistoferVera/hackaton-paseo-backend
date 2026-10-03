@@ -4,6 +4,7 @@ import { Roles, SesionActual } from '../../common/auth/auth.guard.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { ZodPipe } from '../../common/zod.pipe.js';
 import { InteligenciaService } from './inteligencia.service.js';
+import { AsistenteAdmin } from './asistente.service.js';
 
 const num = (v: string | undefined, def: number) => (v && !Number.isNaN(Number(v)) ? Number(v) : def);
 
@@ -124,5 +125,27 @@ export class PanelLocalController {
   @Get('categorias')
   categorias(@SesionActual() s: Sesion, @Query('dias') dias?: string) {
     return this.svc.categoriasLocal(s.localId!, num(dias, 90));
+  }
+}
+
+/** Asistente conversacional del Centro de Inteligencia (con memoria y acciones sugeridas). */
+@Roles('admin', 'marketing', 'analista')
+@Controller('admin/asistente')
+export class AsistenteController {
+  constructor(private readonly asistente: AsistenteAdmin) {}
+
+  @Post()
+  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(400) }))) d: { pregunta: string }) {
+    return this.asistente.preguntar(s, d.pregunta);
+  }
+
+  @Get('historial')
+  historial(@SesionActual() s: Sesion) {
+    return this.asistente.historial(s.sub);
+  }
+
+  @Post('reiniciar')
+  reiniciar(@SesionActual() s: Sesion) {
+    return this.asistente.reiniciar(s.sub);
   }
 }
