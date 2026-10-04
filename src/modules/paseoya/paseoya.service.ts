@@ -85,7 +85,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
     return many(
       this.db,
       `select l.id, l.nombre, l.descripcion, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
-              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.activo,
+              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.fotos, l.activo,
               c.id as categoria_id, c.nombre as categoria, c.ambito,
               (select count(*)::int from producto p where p.local_id = l.id and p.activo and
                 (p.stock > 0 or exists (select 1 from producto_variante v where v.producto_id = p.id and v.activo and v.stock > 0))) as total_productos
@@ -97,6 +97,31 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
        order by (select count(*)::int from producto p where p.local_id = l.id and p.activo) desc, l.nombre`,
       [recintoId, amb, f?.categoriaId ?? null],
     );
+  }
+
+  async local(recintoId: string, id: string) {
+    const l = await one<any>(
+      this.db,
+      `select l.id, l.nombre, l.descripcion, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
+              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.fotos, l.activo,
+              c.id as categoria_id, c.nombre as categoria, c.ambito
+       from local l
+       join categoria c on c.id = l.categoria_id
+       where l.id = $1 and l.recinto_id = $2 and l.activo`,
+      [id, recintoId],
+    );
+    if (!l) throw new NotFoundException('Local no encontrado');
+    const promos = await many<any>(
+      this.db,
+      `select id, titulo, descripcion, tipo, costo_puntos, inicio, fin
+       from promocion
+       where local_id = $1 and estado = 'aprobada'
+         and (inicio is null or inicio <= now())
+         and (fin is null or fin >= now())
+       order by creado_en desc`,
+      [id],
+    );
+    return { ...l, promociones: promos };
   }
 
   async promocionesPaseoYa(recintoId: string, tipo?: 'food' | 'shop') {
