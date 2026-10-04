@@ -147,6 +147,9 @@ export class JarvisService {
     const plan = await this.cerebro.comprender('cliente', pregunta, MemoriaJarvis.paraPrompt(hilo, 10), CLASIFICABLES, await this.saber.catalogoConversacion(recintoId));
     let intencion = (plan?.consultas[0]?.intencion as Intencion | undefined) ?? this.detectar(ctx);
     let entidadesPedidas: Entidades = {};
+    let contextoResuelto: Entidades = {};
+    let intencionResuelta: Intencion = intencion;
+    const consultasResueltas: {intencion:string;pregunta:string}[] = [];
     if (intencion === 'afirmacion') {
       const ultima = [...hilo].reverse().find((x) => x.rol === 'jarvis');
       const p = ultima?.datos?.propuesta as Borrador['propuesta'] | undefined;
@@ -171,9 +174,14 @@ export class JarvisService {
             respuestas.push({texto:'Para reiniciar el contexto, usa Nueva conversación.',reescribir:false}); continue;
           }
           const subEnt = await this.saber.encontrar(recintoId, consulta.pregunta);
-          const sub = await this.manejar(ti, {...ctx, original:consulta.pregunta, t:normalizar(consulta.pregunta), ent:subEnt});
-          if (sub.sinDatos && plan.consultas.length > 1) await this.saber.registrarSinResultado(recintoId, clienteId, sub.sinDatos);
-          respuestas.push(sub);
+          try {
+            const sub = await this.manejar(ti, {...ctx, mem:{...ctx.mem,...contextoResuelto}, original:consulta.pregunta, t:normalizar(consulta.pregunta), ent:subEnt});
+            contextoResuelto = {...contextoResuelto, ...(subEnt.locales.length===1 ? {localId:subEnt.locales[0].id} : {}), ...sub.entidades};
+            intencionResuelta = ti;
+            consultasResueltas.push(consulta);
+            if (sub.sinDatos && plan.consultas.length > 1) await this.saber.registrarSinResultado(recintoId, clienteId, sub.sinDatos);
+            respuestas.push(sub);
+          } catch { respuestas.push({texto:`No pude consultar «${consulta.pregunta}» en este momento. Vuelve a intentarlo.`,reescribir:false}); }
         }
         if (respuestas.length === 1) b = respuestas[0];
         else {
@@ -186,8 +194,8 @@ export class JarvisService {
           if (rutas.length===1) b.ruta=rutas[0].ruta;
         }
       } else b = await this.manejar(intencion, ctx);
-    } catch (e: any) {
-      b = { texto: `No pude consultar ese dato en este momento. ${NO_ENTIENDO}`, reescribir: false };
+    } catch {
+      b = { texto: 'No pude consultar ese dato en este momento. Vuelve a intentarlo.', reescribir: false };
     }
     if (b.sinDatos) await this.saber.registrarSinResultado(recintoId, clienteId, b.sinDatos);
 
@@ -199,15 +207,16 @@ export class JarvisService {
       texto = r.texto;
       motor = r.motor;
     }
-    const guardada: string = b.sinDatos ? 'sin_datos' : intencion;
+    const guardada: string = b.sinDatos ? 'sin_datos' : consultasResueltas.length ? intencionResuelta : intencion;
 
     if (clienteId) {
       const delCliente: Entidades = {
         localId: ent.locales[0]?.id, productoId: ent.productos.length === 1 ? ent.productos[0].id : undefined, actividadId: ent.actividad?.id,
         servicioTipo: ent.servicio?.tipo, categoria: ent.categoria ?? undefined, ...entidadesPedidas,
       };
-      await this.memoria.guardar(clienteId, 'cliente', original, guardada, delCliente);
-      await this.memoria.guardar(clienteId, 'jarvis', texto, guardada, b.entidades ?? {}, {
+      await this.memoria.guardar(clienteId, 'cliente', original, guardada, plan ? {} : delCliente);
+      await this.memoria.guardar(clienteId, 'jarvis', texto, guardada, {...contextoResuelto,...b.entidades}, {
+        consultas:consultasResueltas,
         propuesta: b.propuesta ?? null, ruta: b.ruta ? { metros: b.ruta.metros, destino: b.ruta.destino } : null, motor, tema: b.sinDatos ?? null,
       });
     }
@@ -1316,12 +1325,11 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
    */
   private async libre(c: Ctx): Promise<Borrador> {
     if (c.ent.ev.info.length) return this.info(c);
-    if (JarvisService.hayEvidencia(c.ent)) return this.buscarTema(c);
     const objeto = objetoDe(c.original);
     return {
       texto: objeto
-        ? `No tengo información sobre «${objeto}» en los datos del Paseo, y prefiero no adivinar. Le avisé a la administración para que la agregue. ${NO_ENTIENDO}`
-        : `No entendí tu pregunta. ${NO_ENTIENDO}`,
+        ? `No tengo información registrada para responder «${c.original.trim()}». Puedes consultar ese dato directamente con el comercio.`
+        : '¿Sobre qué negocio o dato del Paseo quieres preguntar? Necesito ese detalle para consultarlo.',
       reescribir: false,
       sinDatos: objeto || undefined,
       sugerencias: SUGERENCIAS_BASE,

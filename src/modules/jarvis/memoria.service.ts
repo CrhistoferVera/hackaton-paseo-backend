@@ -3,6 +3,7 @@ import { Db, many } from '../../infra/db/db.js';
 
 /** Lo último de lo que se habló: permite «¿y cuánto cuesta?» o «¿cómo llego?» sin repetir el nombre. */
 export interface Entidades {
+  ambito?: 'paseo' | 'local';
   localId?: string;
   productoId?: string;
   actividadId?: string;
@@ -67,7 +68,10 @@ export class MemoriaJarvis {
   /** Lo más reciente de cada tipo de entidad en la conversación vigente. */
   contexto(hilo: Turno[]): Entidades {
     const e: Entidades = {};
-    for (const t of hilo) Object.assign(e, t.entidades ?? {});
+    for (const t of hilo) {
+      if (t.entidades?.ambito === 'paseo') { delete e.localId; delete e.localId2; }
+      Object.assign(e, t.entidades ?? {});
+    }
     return e;
   }
 
@@ -92,7 +96,7 @@ export class MemoriaJarvis {
   static paraPrompt(hilo: Turno[], turnos = 6) {
     return hilo
       .slice(-turnos)
-      .map((t) => `${t.rol === 'cliente' ? 'Cliente' : 'Jarvis'}: ${t.texto}`)
+      .map((t) => `${t.rol === 'cliente' ? 'Usuario' : 'Jarvis'}: ${t.texto}${t.rol === 'jarvis' && t.datos?.consultas ? `\nConsultas resueltas: ${JSON.stringify(t.datos.consultas)}` : ''}`)
       .join('\n');
   }
 }

@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Db, many, one } from '../../infra/db/db.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { ahoraBolivia } from '../../common/util.js';
-import { CerebroJarvis } from '../jarvis/cerebro.js';
+import { CerebroJarvis, SISTEMA_ANALISTA } from '../jarvis/cerebro.js';
 import { ConocimientoPaseo, normalizar } from '../jarvis/conocimiento.service.js';
 import { EquidadService } from '../jarvis/equidad.service.js';
 import { type Entidades, MemoriaJarvis } from '../jarvis/memoria.service.js';
@@ -125,8 +125,10 @@ export class AsistenteAdmin {
     const plan = await this.cerebro.comprender('admin', pregunta, MemoriaJarvis.paraPrompt(hilo, 8), permitidas, await this.saber.catalogoConversacion(s.recintoId));
     const ent = await this.saber.encontrar(s.recintoId, t);
     const periodo = this.periodo(t, mem.periodo);
-    const intencion = (plan?.consultas[0]?.intencion as IntencionAdmin|undefined) ?? this.detectar(t, ent.locales.length, mem);
-    const ctx = { localId: ent.locales[0]?.id ?? mem.localId };
+    const intencion = (plan?.consultas[0]?.intencion as IntencionAdmin|undefined) ?? (/^y\b/.test(t) && PERIODO_EXPLICITO.test(t) && hilo.at(-1)?.intencion ? hilo.at(-1)!.intencion as IntencionAdmin : this.detectar(t, ent.locales.length, mem));
+    let contextoResuelto: Entidades = {};
+    let intencionResuelta = intencion;
+    const consultasResueltas: { intencion: string; pregunta: string }[] = [];
     let b: Borrador;
     try {
       if (plan?.aclaracion) b = {texto:plan.aclaracion,reescribir:false};
@@ -137,25 +139,34 @@ export class AsistenteAdmin {
         for (const consulta of consultas) {
           const textoConsulta = normalizar(consulta.pregunta);
           const entidades = await this.saber.encontrar(s.recintoId, textoConsulta);
-          const lapso = this.periodo(textoConsulta, mem.periodo);
           const i = consulta.intencion as IntencionAdmin;
-          const localId = entidades.locales[0]?.id ?? (['local','horas','metrica','comparar'].includes(i) ? mem.localId : undefined);
-          const local2 = entidades.locales[1]?.id ?? (i==='comparar' && localId!==mem.localId ? mem.localId : undefined);
-          const fuera = PERIODO_EXPLICITO.test(textoConsulta) && !['inventario','sin_datos','fuera_de_tema','ayuda','reinicio','acciones','pendientes'].includes(i) ? await this.fueraDeCobertura(s.recintoId,lapso) : null;
-          const respuesta = fuera ?? await this.manejar(i,{s,t:textoConsulta,pregunta:consulta.pregunta,periodo:lapso,localId,local2,categoria:entidades.categoria});
-          secciones.push({...respuesta,intencion:i,motor:'datos',latenciaMs:0,periodo:lapso.etiqueta});
+          try {
+            const lapso = this.periodo(textoConsulta, mem.periodo);
+            const general = /\b(paseo|general|todos los negocios|todos los locales)\b/.test(textoConsulta) && !entidades.locales.length;
+            const localId = entidades.locales[0]?.id ?? (!general && ['local','horas','metrica','comparar'].includes(i) ? mem.localId : undefined);
+            const local2 = entidades.locales[1]?.id ?? (i==='comparar' && localId!==mem.localId ? mem.localId : undefined);
+            const fuera = PERIODO_EXPLICITO.test(textoConsulta) && !['inventario','sin_datos','fuera_de_tema','ayuda','reinicio','acciones','pendientes'].includes(i) ? await this.fueraDeCobertura(s.recintoId,lapso) : null;
+            const respuesta = fuera ?? await this.manejar(i,{s,t:textoConsulta,pregunta:consulta.pregunta,periodo:lapso,localId,local2,categoria:entidades.categoria});
+            secciones.push({...respuesta,intencion:i,motor:'datos',latenciaMs:0,periodo:lapso.etiqueta});
+            if (general) { delete contextoResuelto.localId; delete contextoResuelto.localId2; }
+            contextoResuelto = { ...contextoResuelto, periodo: lapso.clave, ...(general ? {ambito:'paseo' as const} : localId ? {localId,ambito:'local' as const} : {}), ...(local2 ? {localId2:local2} : {}), ...respuesta.entidades };
+            intencionResuelta = i;
+            consultasResueltas.push(consulta);
+          } catch (error) {
+            secciones.push({ intencion:i, texto:error instanceof BadRequestException ? error.message : 'No pude consultar esta parte de tu pregunta. Vuelve a intentarlo; no tengo un resultado verificado.', motor:'datos',latenciaMs:0 });
+          }
         }
         b = secciones.length===1 ? secciones[0] : {texto:secciones.map(r=>r.texto).join('\n\n'),secciones,reescribir:false};
       }
     } catch {
       b = {texto:'No pude consultar los datos del sistema en este momento. No se generaron cifras estimadas; vuelve a intentarlo.',reescribir:false};
     }
-    const texto = b.texto;
+    const texto = plan && !plan.aclaracion && !b.secciones && consultasResueltas.length && !['sin_datos','fuera_de_tema','libre','ayuda'].includes(intencion) && b.texto.length < 1200
+      ? (await this.cerebro.redactar(b.texto, [], [], {historial:MemoriaJarvis.paraPrompt(hilo,8),pregunta,sistema:SISTEMA_ANALISTA})).texto
+      : b.texto;
     const motor = plan ? 'comprension+datos' : 'datos';
-    // El período se recuerda solo si se mencionó (o se heredó); «¿qué hago hoy?» no fija «hoy» para lo que sigue
-    const recordar = PERIODO_EXPLICITO.test(t) || (!!mem.periodo && ['resumen', 'ranking', 'local', 'comparar', 'horas', 'ofertas', 'clientes', 'demanda', 'drops'].includes(intencion)) ? periodo.clave : undefined;
-    await this.memoria.guardar(s.sub, 'cliente', pregunta, intencion, { periodo: recordar, localId: ctx.localId });
-    await this.memoria.guardar(s.sub, 'jarvis', texto, intencion, { periodo: recordar, localId: b.entidades?.localId ?? ctx.localId }, { tabla: !!b.tabla });
+    await this.memoria.guardar(s.sub, 'cliente', pregunta, intencion, {});
+    await this.memoria.guardar(s.sub, 'jarvis', texto, intencionResuelta, contextoResuelto, { tabla: !!b.tabla, consultas: consultasResueltas });
     const { reescribir: _r, entidades: _e, ...resto } = b;
     return { intencion, ...resto, texto, periodo: periodo.etiqueta, motor, latenciaMs: Date.now() - t0 };
   }
@@ -200,6 +211,26 @@ export class AsistenteAdmin {
       const largo = Math.round((Date.parse(hasta) - Date.parse(desde)) / 86400_000) + 1;
       return { clave, desde, hasta, etiqueta, antesDesde: dias(desde, -largo), antesHasta: dias(desde, -1) };
     };
+    const exactas = t.match(/\b\d{4}-\d{2}-\d{2}\b/g);
+    const validarFecha = (fecha: string) => {
+      const ms = Date.parse(fecha + 'T12:00:00Z');
+      if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0,10) !== fecha) throw new BadRequestException('La fecha indicada no es válida. Usa AAAA-MM-DD.');
+      return fecha;
+    };
+    if (exactas?.length) {
+      if (exactas.length > 2) throw new BadRequestException('Indica una fecha o un intervalo de dos fechas.');
+      const desde = validarFecha(exactas[0]), hasta = validarFecha(exactas[1] ?? exactas[0]);
+      if (desde > hasta) throw new BadRequestException('La fecha inicial debe ser anterior o igual a la final.');
+      return crear(exactas.length === 1 ? 'f'+desde : 'r'+desde+'_'+hasta, desde, hasta, exactas.length === 1 ? fechaLarga(desde) : fechaLarga(desde)+' al '+fechaLarga(hasta));
+    }
+    const recordadoRango = anterior?.match(/^r(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$/);
+    if (recordadoRango && !PERIODO_EXPLICITO.test(t)) return this.periodo(recordadoRango[1]+' al '+recordadoRango[2]);
+    const fechaNatural = new RegExp('\\b(\\d{1,2}) de ('+MESES.join('|')+')(?: de (20\\d\\d))?\\b').exec(t);
+    if (fechaNatural) {
+      const fecha = (fechaNatural[3] ?? hoy.slice(0,4))+'-'+String(MESES.indexOf(fechaNatural[2])+1).padStart(2,'0')+'-'+fechaNatural[1].padStart(2,'0');
+      validarFecha(fecha);
+      return crear('f'+fecha,fecha,fecha,fechaLarga(fecha));
+    }
     const n = /ultim[oa]s (\d+) dias/.exec(t);
     if (n) return crear(`d${n[1]}`, dias(hoy, -(Number(n[1]) - 1)), hoy, `los últimos ${n[1]} días`);
     if (/\bhoy\b/.test(t)) return crear('hoy', hoy, hoy, 'hoy');
@@ -253,10 +284,10 @@ export class AsistenteAdmin {
     const r = c.s.recintoId;
     switch (i) {
       case 'inventario': return this.inventario(r);
-      case 'resumen': return this.resumen(r, c.periodo);
+      case 'resumen': return c.localId ? this.local(r, c.localId, c.periodo) : this.resumen(r, c.periodo);
       case 'ranking': return this.ranking(r, c.periodo, /(peores|menos|caen|cae|bajo)/.test(c.t), c.categoria, /(visita|trafico|gente|clientes)/.test(c.t) ? 'visitas' : 'ventas');
-      case 'local': return c.localId ? this.local(r, c.localId, c.periodo) : this.ranking(r, c.periodo, false, c.categoria, 'ventas');
-      case 'comparar': return c.localId && c.local2 ? this.comparar(c.localId, c.local2, c.periodo) : Promise.resolve({ texto: 'Dime los dos locales que quieres comparar, por ejemplo «compara Napoli con Burger House esta semana».', reescribir: false });
+      case 'local': return c.localId ? this.local(r, c.localId, c.periodo) : Promise.resolve({texto:'¿De qué negocio quieres consultar los datos?',reescribir:false});
+      case 'comparar': return c.localId && c.local2 ? this.comparar(c.localId, c.local2, c.periodo) : Promise.resolve({ texto: '¿Qué dos negocios quieres comparar? Puedes indicar también el período.', reescribir: false });
       case 'horas': return this.horas(r, c.periodo, c.localId);
       case 'equidad': return this.equidadFlujo(r, /(mas (gente|publico|clientes|trafico) de la que|sobre ?atendid|saturad|llenos|demasiad)/.test(c.t));
       case 'acciones': return this.acciones(r);
@@ -725,7 +756,7 @@ export class AsistenteAdmin {
     if (/\b(recompra|vuelven|repiten|retencion)\b/.test(t)) {
       // La recompra en un solo día no dice nada: se mide al menos en 30 días
       const largo = Math.round((Date.parse(p.hasta) - Date.parse(p.desde)) / 86400_000) + 1;
-      if (largo < 7) p = { ...p, clave: 'd30', desde: dias(p.hasta, -29), etiqueta: 'los últimos 30 días' };
+      if (largo < 7) return {texto:'La recompra se mide comparando compras en distintos días. Ese intervalo es demasiado corto. ¿Quieres consultarla en los últimos 30 días?',reescribir:false};
       const r = await one<any>(
         this.db,
         `with c as (select cliente_id, count(distinct bo(creado_en)::date) as dias from transaccion
@@ -773,8 +804,8 @@ export class AsistenteAdmin {
     const r: any = await this.inteligencia.preguntar(s.recintoId, s.sub, pregunta);
     if (!r.sql) {
       return {
-        ...this.ayuda(),
-        texto: `No tengo una forma de responder «${pregunta.trim().replace(/[¿?]/g, '')}» con los datos de Paseo Points, y no voy a adivinar. ${this.ayuda().texto}`,
+        texto: `No tengo un resultado verificado para «${pregunta.trim().replace(/[¿?]/g, '')}» en los datos del sistema. ¿Qué negocio, período o dato concreto quieres revisar?`,
+        reescribir: false,
       };
     }
     const columnas = r.filas[0] ? Object.keys(r.filas[0]).map((k) => ({ clave: k, titulo: k.replace(/_/g, ' ') })) : [];
