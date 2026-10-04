@@ -12,7 +12,7 @@ import { RecompensasService } from '../recompensas/recompensas.service.js';
 import { PaseoYaService } from '../paseoya/paseoya.service.js';
 import { JarvisService } from './jarvis.service.js';
 
-const ConsultaSchema = z.object({ celular: z.string().regex(/^\d{8}$/).optional(), pregunta: z.string().min(2).max(300) });
+const ConsultaSchema = z.object({ celular: z.string().regex(/^\d{8}$/).optional(), pregunta: z.string().min(2).max(6000) });
 
 /**
  * API pública v1 para Jarvis Paseo y socios. Autenticación por cabecera x-api-key.
@@ -67,7 +67,7 @@ export class JarvisClienteController {
   ) {}
 
   @Post()
-  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(300) }))) d: { pregunta: string }) {
+  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(6000) }))) d: { pregunta: string }) {
     return this.jarvis.consultar(s.recintoId, s.sub, d.pregunta);
   }
 

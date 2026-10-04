@@ -10,7 +10,7 @@ import { JarvisService } from './jarvis.service.js';
 const EventoSchema = z.discriminatedUnion('tipoEvento', [
   z.object({ tipoEvento: z.literal('escaneo_qr'), detalles: z.object({ codigo: z.string().min(4) }) }),
   z.object({ tipoEvento: z.literal('espera_comida'), detalles: z.object({ localId: z.string().uuid(), minutos: z.number().int().min(1).max(90).optional() }) }),
-  z.object({ tipoEvento: z.literal('pregunta'), detalles: z.object({ texto: z.string().min(2).max(300) }) }),
+  z.object({ tipoEvento: z.literal('pregunta'), detalles: z.object({ texto: z.string().min(2).max(6000) }) }),
 ]);
 
 /**

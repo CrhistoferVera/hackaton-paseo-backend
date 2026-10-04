@@ -6,8 +6,8 @@ import ffmpegPath from 'ffmpeg-static';
 
 const MODELO = process.env.WHISPER_MODELO ?? 'onnx-community/whisper-small';
 const MAX_BYTES = 6 * 1024 * 1024;
-const MAX_SEGUNDOS = 30;
-const ESPERA_MAX_MS = 60_000;
+const MAX_SEGUNDOS = 120;
+const ESPERA_MAX_MS = 180_000;
 
 type Mensaje = { tipo: 'listo'; ms: number } | { tipo: 'fallo'; error: string } | { tipo: 'texto'; id: number; texto?: string; error?: string };
 
@@ -108,7 +108,7 @@ export class OidoJarvis implements OnModuleInit, OnModuleDestroy {
   private decodificar(audio: Buffer): Promise<Float32Array> {
     return new Promise((ok, falla) => {
       if (!ffmpegPath) return falla(new Error('ffmpeg no está disponible'));
-      const p = spawn(ffmpegPath as unknown as string, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-t', String(MAX_SEGUNDOS), '-ac', '1', '-ar', '16000', '-f', 'f32le', 'pipe:1']);
+      const p = spawn(ffmpegPath as unknown as string, ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-t', String(MAX_SEGUNDOS + 1), '-ac', '1', '-ar', '16000', '-f', 'f32le', 'pipe:1']);
       const partes: Buffer[] = [];
       let error = '';
       p.stdout.on('data', (d: Buffer) => partes.push(d));
@@ -137,6 +137,7 @@ export class OidoJarvis implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('No pude leer el audio que mandó el teléfono. Intenta de nuevo o escribe tu pregunta.');
     }
     const segundos = pcm.length / 16000;
+    if (segundos > MAX_SEGUNDOS) throw new BadRequestException(`El audio supera ${MAX_SEGUNDOS} segundos. Envía un audio más corto; no se procesó parcialmente.`);
     const e = energia(pcm);
     // Algunos Android graban muy bajo: solo se descarta lo que es silencio de verdad
     if (segundos < 0.3 || e < 0.0008) {
@@ -178,7 +179,7 @@ function normalizarVolumen(pcm: Float32Array) {
 
 /** Whisper a veces devuelve muletillas de silencio («Gracias por ver el video»): se descartan. */
 export function limpiarTranscripcion(t: string) {
-  const s = t.replace(/\[[^\]]*\]|\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
-  if (/^(gracias por ver|suscr[ií]bete|subt[ií]tulos|amara\.org|¡?gracias\.?!?$)/i.test(s)) return '';
+  const s = t.replace(/\[(?:música|musica|silencio|ruido|aplausos)\]/gi, '').replace(/\s+/g, ' ').trim();
+  if (/^(?:gracias por ver(?: el video)?|suscr[ií]bete|subt[ií]tulos(?: por amara\.org)?|amara\.org|¡?gracias)[.!¡?]*$/i.test(s)) return '';
   return s;
 }

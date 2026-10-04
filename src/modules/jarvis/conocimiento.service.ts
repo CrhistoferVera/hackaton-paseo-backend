@@ -129,6 +129,12 @@ export class ConocimientoPaseo {
     return r;
   }
 
+  /** Catálogo completo de nombres; las cifras se consultan en cada respuesta. */
+  async catalogoConversacion(recintoId: string) {
+    const i = await this.cargar(recintoId);
+    return { locales: i.locales.map(l => ({ nombre: l.nombre, piso: l.piso, categoria: l.categoria })), categorias: [...new Set(i.locales.map(l => l.categoria))], servicios: i.servicios.map(s => s.nombre) };
+  }
+
   /** Reconoce entidades en la frase. Tolera errores del reconocedor (una letra de diferencia). */
   async encontrar(recintoId: string, frase: string): Promise<Encontrado> {
     const idx = await this.cargar(recintoId);

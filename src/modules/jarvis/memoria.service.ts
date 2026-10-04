@@ -40,7 +40,7 @@ export class MemoriaJarvis {
   async guardar(clienteId: string, rol: 'cliente' | 'jarvis', texto: string, intencion: string | null = null, entidades: Entidades = {}, datos: Record<string, unknown> = {}) {
     const limpias = Object.fromEntries(Object.entries(entidades).filter(([, v]) => v !== undefined && v !== null && v !== ''));
     await this.db.query('insert into conversacion_jarvis (cliente_id, rol, texto, intencion, entidades, datos) values ($1,$2,$3,$4,$5,$6)', [
-      clienteId, rol, texto.slice(0, 1000), intencion, JSON.stringify(limpias), JSON.stringify(datos),
+      clienteId, rol, texto, intencion, JSON.stringify(limpias), JSON.stringify(datos),
     ]);
   }
 

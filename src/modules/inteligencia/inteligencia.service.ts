@@ -631,6 +631,7 @@ La fecha de hoy en Bolivia es bo(now())::date. Los pisos son Planta baja (T) y n
     if (/\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|copy|execute|call|do|vacuum|listen|notify|set|reset)\b/.test(bajo) || /pg_|information_schema/.test(bajo)) {
       throw new BadRequestException('La consulta generada usa operaciones no permitidas');
     }
+    if (!/\b(from|join)\s+oro\./i.test(s)) throw new BadRequestException('La consulta debe usar datos reales de las vistas del sistema');
     const ctes = new Set([...bajo.matchAll(/(\w+)\s+as\s*\(/g)].map((m) => m[1]));
     for (const m of bajo.matchAll(/\b(from|join)\s+([a-z_][\w.]*)/g)) {
       const rel = m[2];
@@ -707,7 +708,7 @@ La fecha de hoy en Bolivia es bo(now())::date. Los pisos son Planta baja (T) y n
     let grafico: any;
     let titulo = pregunta;
     let fuente: 'llm' | 'plantilla' = 'plantilla';
-    let respuesta: string | null = null;
+
     const gen = this.llm.disponible
       ? LlmService.json<{ sql: string; grafico: any; titulo: string }>(
           await this.llm.completar(
@@ -741,14 +742,7 @@ Responde solo JSON: {"titulo":"...","sql":"...","grafico":{"tipo":"barra|linea|t
     } catch (e: any) {
       throw new BadRequestException(`La consulta falló: ${e.message}`);
     }
-    if (fuente === 'llm') {
-      respuesta = await this.llm.completar(
-        'Respondes en 1 o 2 frases en español a un gerente de centro comercial, con los números del resultado, sin inventar nada.',
-        JSON.stringify({ pregunta, filas: filas.slice(0, 20) }),
-        { maxTokens: 200 },
-      );
-    }
     await this.db.query(`insert into auditoria (usuario_id, accion, entidad, despues) values ($1, 'consulta_nl', 'oro', $2)`, [usuarioId, JSON.stringify({ pregunta, sql: seguro, fuente })]);
-    return { pregunta, titulo, sql: seguro, filas, grafico, fuente, respuesta: respuesta ?? this.redactar(titulo, filas, grafico) };
+    return { pregunta, titulo, sql: seguro, filas, grafico, fuente, respuesta: this.redactar('Resultados del sistema', filas, grafico) };
   }
 }

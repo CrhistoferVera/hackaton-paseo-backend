@@ -55,22 +55,14 @@ export class RecintoService {
       'select id, tipo, nombre, descripcion, piso, x, y, horario, palabras_clave from servicio_paseo where recinto_id = $1 and activo order by piso, tipo',
       [recintoId],
     );
-    const entradas = [
-      { id: 'N1:entrada:norte', nombre: 'Puerta Norte', piso: 'N1', x: 500, y: 0 },
-      { id: 'N1:entrada:sur', nombre: 'Puerta Sur', piso: 'N1', x: 500, y: 600 },
-      { id: 'N1:entrada:parqueo', nombre: 'Acceso del parqueo', piso: 'N1', x: 1000, y: 300 },
-    ];
-    const verticales = ['T', 'N1', 'N2', 'N3', 'N4'].flatMap((piso) => [
-      { tipo: 'escalera', piso, x: 450, y: 280 },
-      { tipo: 'ascensor', piso, x: 850, y: 280 },
-    ]);
-    return { recinto, pisos: [
-      { id: 'T', nombre: 'Planta baja' },
-      { id: 'N1', nombre: 'Nivel 1' },
-      { id: 'N2', nombre: 'Nivel 2' },
-      { id: 'N3', nombre: 'Nivel 3' },
-      { id: 'N4', nombre: 'Nivel 4' },
-    ], ancho: 1000, alto: 600, zonas, locales, servicios, entradas, verticales };
+    // El mapa describe los registros existentes, no una lista fija de niveles o accesos.
+    const nodos = await many<any>(this.db, "select id, tipo, nombre, piso, x, y from nodo_ubicacion where recinto_id=$1 and tipo in ('entrada','escalera','ascensor')", [recintoId]);
+    const ids = [...new Set<string>([...zonas, ...locales, ...servicios].map((r: any) => r.piso).filter(Boolean))];
+    ids.sort((a,b) => a==='T' ? -1 : b==='T' ? 1 : a.localeCompare(b, 'es', {numeric:true}));
+    const pisos = ids.map(id => ({id, nombre: id==='T' ? 'Planta baja' : /^N\d+$/.test(id) ? 'Nivel '+id.slice(1) : id}));
+    const ancho = Math.max(1000, ...zonas.map((z:any)=>Number(z.x)+Number(z.ancho)), ...locales.map(l=>Number(l.coord_x)));
+    const alto = Math.max(600, ...zonas.map((z:any)=>Number(z.y)+Number(z.alto)), ...locales.map(l=>Number(l.coord_y)));
+    return { recinto, pisos, ancho, alto, zonas, locales, servicios, entradas: nodos.filter(n=>n.tipo==='entrada'), verticales:nodos.filter(n=>n.tipo!=='entrada') };
   }
 
   /**

@@ -101,7 +101,7 @@ export class InteligenciaController {
   }
 
   @Post('preguntar')
-  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(4).max(300) }))) d: { pregunta: string }) {
+  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(4).max(6000) }))) d: { pregunta: string }) {
     return this.svc.preguntar(s.recintoId, s.sub, d.pregunta);
   }
 }
@@ -143,7 +143,7 @@ export class AsistenteController {
   ) {}
 
   @Post()
-  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(400) }))) d: { pregunta: string }) {
+  preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(6000) }))) d: { pregunta: string }) {
     return this.asistente.preguntar(s, d.pregunta);
   }
 

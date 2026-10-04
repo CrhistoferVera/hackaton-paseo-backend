@@ -40,7 +40,7 @@ process.on('message', async (m: { id: number; pcm: Float32Array }) => {
   try {
     const asr = await listo;
     const r = await asr(m.pcm, { language: 'spanish', task: 'transcribe', chunk_length_s: 30 });
-    enviar({ tipo: 'texto', id: m.id, texto: (Array.isArray(r) ? r[0] : r).text });
+    enviar({ tipo: 'texto', id: m.id, texto: Array.isArray(r) ? r.map(segmento => segmento.text).join(' ') : r.text });
   } catch (e: any) {
     enviar({ tipo: 'texto', id: m.id, error: String(e?.message ?? e) });
   }

@@ -1,3 +1,4 @@
+import { instruccionesPlan, validarPlan, type PlanConversacion } from './comprension.js';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { LlmService } from '../ia/llm.service.js';
 
@@ -5,7 +6,7 @@ import { LlmService } from '../ia/llm.service.js';
 export interface MotorTexto {
   readonly nombre: string;
   disponible(): Promise<boolean>;
-  generar(sistema: string, prompt: string, opciones: { maxTokens: number; timeoutMs: number }): Promise<string | null>;
+  generar(sistema: string, prompt: string, opciones: { maxTokens: number; timeoutMs: number; json?: boolean | Record<string, unknown> }): Promise<string | null>;
 }
 
 /**
@@ -37,12 +38,12 @@ export class MotorOllama implements MotorTexto {
     return this.estado.ok;
   }
 
-  async generar(sistema: string, prompt: string, op: { maxTokens: number; timeoutMs: number }) {
+  async generar(sistema: string, prompt: string, op: { maxTokens: number; timeoutMs: number; json?: boolean | Record<string, unknown> }) {
     try {
       const r = await fetch(`${this.url}/api/generate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.modelo, system: sistema, prompt, stream: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: op.maxTokens } }),
+        body: JSON.stringify({ model: this.modelo, system: sistema, prompt, stream: false, format: op.json === true ? 'json' : op.json || undefined, keep_alive: '30m', options: { temperature: 0.1, num_ctx: Number(process.env.OLLAMA_CONTEXTO ?? 16384), num_predict: op.maxTokens } }),
         signal: AbortSignal.timeout(op.timeoutMs),
       });
       if (!r.ok) return null;
@@ -67,7 +68,7 @@ export class MotorNube implements MotorTexto {
   async disponible() {
     return process.env.JARVIS_PERMITIR_NUBE === 'true' && this.llm.disponible;
   }
-  generar(sistema: string, prompt: string, op: { maxTokens: number; timeoutMs: number }) {
+  generar(sistema: string, prompt: string, op: { maxTokens: number; timeoutMs: number; json?: boolean | Record<string, unknown> }) {
     return Promise.race([
       this.llm.completar(sistema, prompt, { maxTokens: op.maxTokens }),
       new Promise<null>((r) => setTimeout(() => r(null), op.timeoutMs)),
@@ -148,13 +149,18 @@ export class CerebroJarvis implements OnModuleInit {
   }
 
   /** Clasificación breve en JSON con el primer motor disponible (sin respaldo: devuelve null). */
-  async json<T>(sistema: string, prompt: string): Promise<T | null> {
+  async json<T>(sistema: string, prompt: string, opciones: { maxTokens?: number; timeoutMs?: number; esquema?: Record<string, unknown> } = {}): Promise<T | null> {
     for (const m of this.motores) {
       if (!(await m.disponible())) continue;
-      const j = LlmService.json<T>(await m.generar(sistema, prompt, { maxTokens: 60, timeoutMs: this.timeoutMs }));
+      const j = LlmService.json<T>(await m.generar(sistema, prompt, { maxTokens: opciones.maxTokens ?? 60, timeoutMs: opciones.timeoutMs ?? this.timeoutMs, json: opciones.esquema ?? true }));
       if (j) return j;
     }
     return null;
+  }
+
+  async comprender(rol: 'cliente' | 'admin', pregunta: string, historial: string, intenciones: readonly string[], catalogo: unknown): Promise<PlanConversacion | null> {
+    const valor = await this.json<unknown>(instruccionesPlan(rol, intenciones), JSON.stringify({ catalogo, historial, mensajeCompleto: pregunta }), { maxTokens: 1600, timeoutMs: Number(process.env.JARVIS_COMPRENSION_TIMEOUT_MS ?? 60000), esquema: { type:'object', additionalProperties:false, properties:{consultas:{type:'array',maxItems:6,items:{type:'object',additionalProperties:false,properties:{intencion:{type:'string',enum:[...intenciones]},pregunta:{type:'string'}},required:['intencion','pregunta']}},aclaracion:{type:['string','null']}},required:['consultas','aclaracion'] } });
+    return validarPlan(valor, intenciones);
   }
 
   /** El modelo no puede agregar, quitar ni cambiar cifras (metros, minutos, puntos, precios). */

@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Db, many, one } from '../../infra/db/db.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { ahoraBolivia } from '../../common/util.js';
-import { CerebroJarvis, SISTEMA_ANALISTA } from '../jarvis/cerebro.js';
+import { CerebroJarvis } from '../jarvis/cerebro.js';
 import { ConocimientoPaseo, normalizar } from '../jarvis/conocimiento.service.js';
 import { EquidadService } from '../jarvis/equidad.service.js';
 import { type Entidades, MemoriaJarvis } from '../jarvis/memoria.service.js';
@@ -15,7 +15,7 @@ const PERIODO_EXPLICITO = new RegExp(`(\\bhoy\\b|\\bayer\\b|semana|\\bmes\\b|ult
 type IntencionAdmin =
   | 'resumen' | 'ranking' | 'local' | 'comparar' | 'horas' | 'equidad' | 'acciones' | 'ofertas' | 'pendientes'
   | 'clientes' | 'demanda' | 'fraude' | 'eventos' | 'drops' | 'promociones' | 'jarvis' | 'jarvis_sin_datos' | 'metrica'
-  | 'sin_datos' | 'fuera_de_tema' | 'ayuda' | 'reinicio' | 'libre';
+  | 'sin_datos' | 'fuera_de_tema' | 'ayuda' | 'reinicio' | 'libre' | 'inventario';
 
 /**
  * Lo que Paseo Points no mide: se dice tal cual y se ofrece lo más cercano que sí hay.
@@ -61,6 +61,7 @@ export interface AccionAdmin {
 
 export interface RespuestaAdmin {
   intencion: IntencionAdmin;
+  secciones?: RespuestaAdmin[];
   texto: string;
   tabla?: { columnas: Columna[]; filas: Record<string, unknown>[] };
   grafico?: { tipo: 'barra' | 'linea'; x: string; y: string; unidad?: string };
@@ -114,33 +115,43 @@ export class AsistenteAdmin {
   // ================================================================== entrada
 
   async preguntar(s: Sesion, pregunta: string): Promise<RespuestaAdmin> {
+    if (!pregunta.trim() || pregunta.length > 6000) throw new BadRequestException('Envía un mensaje de 1 a 6000 caracteres. No se procesará parcialmente.');
     const t0 = Date.now();
     // «Hola Jarvis, resumen de hoy»: el saludo y el nombre no son parte de la pregunta
     const t = normalizar(pregunta).replace(/^((hola|oye|buenas|buenos dias|buenas tardes|buenas noches)\s+)?(jarvis|asistente)\s+/, '').trim() || normalizar(pregunta);
     const hilo = await this.memoria.hilo(s.sub, 8);
     const mem = this.memoria.contexto(hilo);
+    const permitidas: IntencionAdmin[] = ['resumen','ranking','local','comparar','horas','equidad','acciones','ofertas','pendientes','clientes','demanda','fraude','eventos','promociones','jarvis','jarvis_sin_datos','metrica','sin_datos','fuera_de_tema','ayuda','libre','inventario'];
+    const plan = await this.cerebro.comprender('admin', pregunta, MemoriaJarvis.paraPrompt(hilo, 8), permitidas, await this.saber.catalogoConversacion(s.recintoId));
     const ent = await this.saber.encontrar(s.recintoId, t);
     const periodo = this.periodo(t, mem.periodo);
-    const intencion = this.detectar(t, ent.locales.length, mem);
-    const localId = ent.locales[0]?.id ?? (['local', 'horas'].includes(intencion) || /\b(ahi|ese|esa|el mismo)\b/.test(t) ? mem.localId : undefined);
-    const ctx = { s, t, pregunta, periodo, localId, local2: ent.locales[1]?.id ?? (intencion === 'comparar' ? mem.localId : undefined), categoria: ent.categoria };
-
+    const intencion = (plan?.consultas[0]?.intencion as IntencionAdmin|undefined) ?? this.detectar(t, ent.locales.length, mem);
+    const ctx = { localId: ent.locales[0]?.id ?? mem.localId };
     let b: Borrador;
     try {
-      // Un período sin datos («ventas de 2020») se dice antes de responder con ceros
-      const fuera = PERIODO_EXPLICITO.test(t) && !['sin_datos', 'fuera_de_tema', 'ayuda', 'reinicio', 'acciones', 'pendientes'].includes(intencion) ? await this.fueraDeCobertura(s.recintoId, periodo) : null;
-      b = fuera ?? (await this.manejar(intencion, ctx));
-    } catch (e: any) {
-      b = { texto: `No pude completar esa consulta (${e.message}). Prueba con «resumen de la semana», «equidad del flujo» o «qué debería hacer hoy».`, reescribir: false };
+      if (plan?.aclaracion) b = {texto:plan.aclaracion,reescribir:false};
+      else if (!plan && (pregunta.length > 120 || /\b(no|sin|excepto|pero|ademas)\b/.test(t) || (pregunta.match(/[?？]/g)?.length??0)>1)) b = {texto:'El motor de comprensión no está disponible. Para no omitir condiciones, consulta una pregunta concreta a la vez o vuelve a intentarlo.',reescribir:false};
+      else {
+        const consultas = plan?.consultas.length ? plan.consultas : [{intencion, pregunta}];
+        const secciones: RespuestaAdmin[] = [];
+        for (const consulta of consultas) {
+          const textoConsulta = normalizar(consulta.pregunta);
+          const entidades = await this.saber.encontrar(s.recintoId, textoConsulta);
+          const lapso = this.periodo(textoConsulta, mem.periodo);
+          const i = consulta.intencion as IntencionAdmin;
+          const localId = entidades.locales[0]?.id ?? (['local','horas','metrica','comparar'].includes(i) ? mem.localId : undefined);
+          const local2 = entidades.locales[1]?.id ?? (i==='comparar' && localId!==mem.localId ? mem.localId : undefined);
+          const fuera = PERIODO_EXPLICITO.test(textoConsulta) && !['inventario','sin_datos','fuera_de_tema','ayuda','reinicio','acciones','pendientes'].includes(i) ? await this.fueraDeCobertura(s.recintoId,lapso) : null;
+          const respuesta = fuera ?? await this.manejar(i,{s,t:textoConsulta,pregunta:consulta.pregunta,periodo:lapso,localId,local2,categoria:entidades.categoria});
+          secciones.push({...respuesta,intencion:i,motor:'datos',latenciaMs:0,periodo:lapso.etiqueta});
+        }
+        b = secciones.length===1 ? secciones[0] : {texto:secciones.map(r=>r.texto).join('\n\n'),secciones,reescribir:false};
+      }
+    } catch {
+      b = {texto:'No pude consultar los datos del sistema en este momento. No se generaron cifras estimadas; vuelve a intentarlo.',reescribir:false};
     }
-
-    let texto = b.texto;
-    let motor = 'datos';
-    if (b.reescribir !== false && texto.length < 600) {
-      const r = await this.cerebro.redactar(texto, [], [], { historial: MemoriaJarvis.paraPrompt(hilo, 4), pregunta, sistema: SISTEMA_ANALISTA });
-      texto = r.texto;
-      motor = r.motor === 'plantilla' ? 'datos' : r.motor;
-    }
+    const texto = b.texto;
+    const motor = plan ? 'comprension+datos' : 'datos';
     // El período se recuerda solo si se mencionó (o se heredó); «¿qué hago hoy?» no fija «hoy» para lo que sigue
     const recordar = PERIODO_EXPLICITO.test(t) || (!!mem.periodo && ['resumen', 'ranking', 'local', 'comparar', 'horas', 'ofertas', 'clientes', 'demanda', 'drops'].includes(intencion)) ? periodo.clave : undefined;
     await this.memoria.guardar(s.sub, 'cliente', pregunta, intencion, { periodo: recordar, localId: ctx.localId });
@@ -153,6 +164,7 @@ export class AsistenteAdmin {
 
   detectar(t: string, conLocal: number, mem: Entidades): IntencionAdmin {
     const r = (re: RegExp) => re.test(t);
+    if (r(/(cuantos|cantidad de|total de|todos los|distribucion de).*(locales|negocios|pisos|niveles)|locales por piso/)) return 'inventario';
     if (r(/(nueva conversacion|empecemos de nuevo|olvida (todo|eso))/)) return 'reinicio';
     if (r(/^(ayuda|que puedes hacer|que sabes hacer|como funcionas)/)) return 'ayuda';
     if (r(/\b(clima|que tiempo hace|va a llover|temperatura|pronostico|capital de|presidente|quien gano|el partido|noticias|chiste|receta de|horoscopo)/)) return 'fuera_de_tema';
@@ -240,6 +252,7 @@ export class AsistenteAdmin {
   private manejar(i: IntencionAdmin, c: { s: Sesion; t: string; pregunta: string; periodo: Periodo; localId?: string; local2?: string; categoria: string | null }): Promise<Borrador> {
     const r = c.s.recintoId;
     switch (i) {
+      case 'inventario': return this.inventario(r);
       case 'resumen': return this.resumen(r, c.periodo);
       case 'ranking': return this.ranking(r, c.periodo, /(peores|menos|caen|cae|bajo)/.test(c.t), c.categoria, /(visita|trafico|gente|clientes)/.test(c.t) ? 'visitas' : 'ventas');
       case 'local': return c.localId ? this.local(r, c.localId, c.periodo) : this.ranking(r, c.periodo, false, c.categoria, 'ventas');
@@ -747,6 +760,14 @@ export class AsistenteAdmin {
     };
   }
 
+  private async inventario(recintoId: string): Promise<Borrador> {
+    const filas = await many<any>(this.db, 'select nombre, piso, numero_local, activo from local where recinto_id=$1 order by piso, numero_local, nombre', [recintoId]);
+    const niveles = new Map<string, number>();
+    for (const f of filas) niveles.set(f.piso, (niveles.get(f.piso) ?? 0) + 1);
+    const detalle = [...niveles].map(([p, n]) => (p === 'T' ? 'Planta baja' : p.replace(/^N/, 'Nivel ')) + ': ' + n).join('; ');
+    return { texto: 'El sistema registra ' + filas.length + ' locales distribuidos en ' + niveles.size + ' niveles con negocios. ' + detalle + '.', tabla: { columnas: [{clave:'nombre',titulo:'Negocio'},{clave:'nivel',titulo:'Nivel'},{clave:'numero_local',titulo:'Número de local'},{clave:'estado',titulo:'Estado'}], filas: filas.map(f => ({...f, nivel:f.piso === 'T' ? 'Planta baja' : f.piso.replace(/^N/, 'Nivel '), estado:f.activo ? 'Activo' : 'Inactivo'})) }, reescribir:false };
+  }
+
   /** Lo que no encaja: «Pregúntale a tus datos» sobre las vistas oro; si no hay forma de responder, se dice. */
   private async libre(s: Sesion, pregunta: string): Promise<Borrador> {
     const r: any = await this.inteligencia.preguntar(s.recintoId, s.sub, pregunta);
@@ -757,6 +778,6 @@ export class AsistenteAdmin {
       };
     }
     const columnas = r.filas[0] ? Object.keys(r.filas[0]).map((k) => ({ clave: k, titulo: k.replace(/_/g, ' ') })) : [];
-    return { texto: r.respuesta, reescribir: false, tabla: r.filas.length ? { columnas, filas: r.filas.slice(0, 50) } : undefined, grafico: r.grafico?.tipo === 'barra' || r.grafico?.tipo === 'linea' ? r.grafico : undefined };
+    return { texto: r.respuesta, reescribir: false, tabla: r.filas.length ? { columnas, filas: r.filas } : undefined, grafico: r.grafico?.tipo === 'barra' || r.grafico?.tipo === 'linea' ? r.grafico : undefined };
   }
 }

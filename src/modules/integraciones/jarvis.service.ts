@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Db, many, one } from '../../infra/db/db.js';
 import { ahoraBolivia } from '../../common/util.js';
 import { FidelizacionService } from '../fidelizacion/fidelizacion.service.js';
@@ -27,8 +27,9 @@ export type Intencion =
  * cuyo manejador consulta datos del propio cliente o del Paseo; nunca genera la respuesta.
  */
 const CLASIFICABLES: Intencion[] = [
-  'saldo', 'nivel', 'canjes', 'vencimiento', 'movimientos', 'oportunidades', 'promociones', 'ofertas', 'eventos', 'misiones', 'drops', 'parqueo',
-  'recomendacion', 'pedido_estado', 'libre',
+ 'saludo','gracias','ayuda','reinicio','afirmacion','saldo','nivel','canjes','vencimiento','movimientos','puntos_ganar','oportunidades',
+ 'promociones','ofertas','eventos','misiones','drops','parqueo','horario','local_info','donde','servicio','precio','producto','tiempo','recomendacion',
+ 'pedido_estado','pedido_donde','espera','cerca','buscar','info','zona','conteo','cartelera','fuera_de_tema','libre'
 ];
 
 type Ruta = ReturnType<typeof OrientacionService.paraApp>;
@@ -126,6 +127,7 @@ export class JarvisService {
   // ================================================================== entrada principal
 
   async consultar(recintoId: string, clienteId: string | null, pregunta: string): Promise<RespuestaJarvis> {
+    if (!pregunta.trim() || pregunta.length > 6000) throw new BadRequestException('Envía un mensaje de 1 a 6000 caracteres. No se procesará parcialmente.');
     const t0 = Date.now();
     // Se quita el vocativo («oye Jarvis», «…, Jarvis») pero no el saludo
     const original =
@@ -142,7 +144,8 @@ export class JarvisService {
     const nombre = clienteId ? ((await one<{ nombre: string }>(this.db, 'select nombre from usuario where id = $1', [clienteId]))?.nombre.split(' ')[0] ?? null) : null;
     const ctx: Ctx = { recintoId, clienteId, nombre, t, original, ent, mem, hilo };
 
-    let intencion = this.detectar(ctx);
+    const plan = await this.cerebro.comprender('cliente', pregunta, MemoriaJarvis.paraPrompt(hilo, 10), CLASIFICABLES, await this.saber.catalogoConversacion(recintoId));
+    let intencion = (plan?.consultas[0]?.intencion as Intencion | undefined) ?? this.detectar(ctx);
     let entidadesPedidas: Entidades = {};
     if (intencion === 'afirmacion') {
       const ultima = [...hilo].reverse().find((x) => x.rol === 'jarvis');
@@ -153,11 +156,36 @@ export class JarvisService {
         ctx.mem = { ...ctx.mem, ...p.entidades };
       } else intencion = 'gracias';
     }
-    if (intencion === 'desconocida') intencion = JarvisService.hayEvidencia(ctx.ent) ? 'buscar' : await this.clasificarConModelo(ctx);
+    if (intencion === 'desconocida') intencion = JarvisService.hayEvidencia(ctx.ent) ? 'buscar' : 'libre';
 
     let b: Borrador;
     try {
-      b = await this.manejar(intencion, ctx);
+      if (plan?.aclaracion) b = { texto: plan.aclaracion, reescribir: false };
+      else if (!plan && (original.length > 120 || /\b(no|sin|excepto|pero|ademas)\b/.test(t) || (original.match(/[?？]/g)?.length ?? 0) > 1)) {
+        b = { texto: 'El motor de comprensión no está disponible en este momento. Para no ignorar una condición de tu mensaje, envíame una pregunta concreta a la vez o vuelve a intentarlo.', reescribir: false };
+      } else if (plan?.consultas.length && plan.consultas[0].intencion !== 'afirmacion') {
+        const respuestas: Borrador[] = [];
+        for (const consulta of plan.consultas) {
+          const ti = consulta.intencion as Intencion;
+          if (ti === 'reinicio' && !/^(?:olvida todo|empecemos de nuevo|nueva conversacion|borra (?:la|esta) conversacion)[.!?]*$/.test(t)) {
+            respuestas.push({texto:'Para reiniciar el contexto, usa Nueva conversación.',reescribir:false}); continue;
+          }
+          const subEnt = await this.saber.encontrar(recintoId, consulta.pregunta);
+          const sub = await this.manejar(ti, {...ctx, original:consulta.pregunta, t:normalizar(consulta.pregunta), ent:subEnt});
+          if (sub.sinDatos && plan.consultas.length > 1) await this.saber.registrarSinResultado(recintoId, clienteId, sub.sinDatos);
+          respuestas.push(sub);
+        }
+        if (respuestas.length === 1) b = respuestas[0];
+        else {
+          b = {texto:respuestas.map(r=>r.texto).join('\n\n'),reescribir:false};
+          for (const key of ['productos','recompensas','promociones','eventos','acciones','sugerencias'] as const) {
+            (b as any)[key] = respuestas.flatMap(r=>(r as any)[key]??[]);
+          }
+          // Varias rutas no pueden reducirse silenciosamente a un único destino.
+          const rutas = respuestas.filter(r=>r.ruta);
+          if (rutas.length===1) b.ruta=rutas[0].ruta;
+        }
+      } else b = await this.manejar(intencion, ctx);
     } catch (e: any) {
       b = { texto: `No pude consultar ese dato en este momento. ${NO_ENTIENDO}`, reescribir: false };
     }
@@ -307,7 +335,7 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
         if (/paseo points|programa|puntos/.test(c.t)) {
           const r = await this.fidelizacion.reglaVigente(this.db, c.recintoId);
           return {
-            texto: `Paseo Points es el programa de puntos del Paseo Aranjuez: ganas 1 punto por cada ${Number(r.bs_por_punto) === 1 ? 'boliviano' : dinero(r.bs_por_punto)} que gastas, ${r.puntos_visita_diaria} puntos por tu primera visita del día y ${r.puntos_descubrimiento} por cada local nuevo que descubres. Los canjeas por comida, entradas, descuentos o parqueo, y duran 12 meses.`,
+            texto: `Paseo Points es el programa de puntos del Paseo Aranjuez: ganas 1 punto por cada ${Number(r.bs_por_punto) === 1 ? 'boliviano' : dinero(r.bs_por_punto)} que gastas, ${r.puntos_visita_diaria} puntos por tu primera visita del día y ${r.puntos_descubrimiento} por cada local nuevo que descubres. Los canjeas por comida, entradas, descuentos o parqueo, y vencen a los ${r.dias_vencimiento} días.`,
             reescribir: false,
             sugerencias: ['¿Cuántos puntos tengo?', '¿Qué puedo canjear?', '¿Dónde gano más puntos?'],
           };
@@ -1236,7 +1264,8 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
   /** «¿Cuántos locales hay?»: se cuenta en la base. */
   private async conteo(c: Ctx): Promise<Borrador> {
     if (/\b(pisos|niveles)\b/.test(c.t)) {
-      return { texto: 'El Paseo Aranjuez tiene cinco niveles: Planta baja y los niveles 1, 2, 3 y 4.', reescribir: false };
+      const pisos = await many<{piso:string}>(this.db, 'select piso from local where recinto_id=$1 union select piso from zona where recinto_id=$1 union select piso from servicio_paseo where recinto_id=$1 and activo', [c.recintoId]);
+      return {texto: pisos.length ? 'El sistema registra '+pisos.length+' niveles: '+lista(pisos.map(p=>NOMBRE_PISO[p.piso]??p.piso))+'.' : 'No hay niveles registrados en el sistema.',reescribir:false};
     }
     const cs = await this.saber.conteo(c.recintoId);
     const total = cs.reduce((a, x) => a + x.n, 0);
