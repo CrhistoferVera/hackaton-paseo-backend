@@ -4,14 +4,13 @@ import { z } from 'zod';
 import { Roles, SesionActual } from '../../common/auth/auth.guard.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { ZodPipe, zFecha, zUuid } from '../../common/zod.pipe.js';
-import { IdentidadService } from '../identidad/identidad.service.js';
 import { ComprasService } from './compras.service.js';
 
 const CompraSchema = z
   .object({
     pase: z.string().optional(),
     clienteId: zUuid.optional(),
-    codigoCliente: z.string().regex(/^\d{6}$/).optional(),
+    codigoCliente: z.string().regex(/^[A-Z0-9]{8}:\d{6}$/).optional(),
     montoBs: z.number().positive().max(1_000_000),
     categoria: z.string().nullable().optional(),
     nroFactura: z.string().max(40).nullable().optional(),
@@ -19,7 +18,7 @@ const CompraSchema = z
     capturadoEn: z.string().datetime().optional(),
     offline: z.boolean().optional(),
   })
-  .refine((d) => d.pase || (d.clienteId && d.codigoCliente), { message: 'Falta el pase o la identificación por celular' });
+  .refine((d) => !!d.pase !== !!d.codigoCliente, { message: 'Ingresa solo el QR o el código único del cliente' });
 
 const FacturaSchema = z.object({ contenido: z.string().min(5), montoBs: z.number().positive().optional(), fecha: zFecha.optional() });
 
@@ -28,7 +27,6 @@ const FacturaSchema = z.object({ contenido: z.string().min(5), montoBs: z.number
 export class CajaController {
   constructor(
     private readonly compras: ComprasService,
-    private readonly identidad: IdentidadService,
   ) {}
 
   /** Tras escanear el pase, la caja muestra a quién va a acreditar. */
@@ -37,10 +35,9 @@ export class CajaController {
     return this.compras.previsualizar(s, d.pase);
   }
 
-  /** HU-L03: búsqueda por los últimos 4 dígitos del celular. */
-  @Get('clientes/buscar')
-  buscar(@Query('ultimos') ultimos: string) {
-    return this.identidad.buscarPorCelular(ultimos ?? '');
+  @Post('clientes/codigo')
+  previsualizarCodigo(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ codigo: z.string().regex(/^[A-Z0-9]{8}:\d{6}$/) }))) d: { codigo: string }) {
+    return this.compras.previsualizar(s, 'PP1:' + d.codigo);
   }
 
   @Post('compras')

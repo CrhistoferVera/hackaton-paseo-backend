@@ -1,3 +1,4 @@
+import { RealtimeService } from '../../infra/realtime/realtime.service.js';
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Db, Queryable, many, one } from '../../infra/db/db.js';
 import type { Sesion } from '../../common/auth/tokens.js';
@@ -39,6 +40,7 @@ export class EventosService implements OnModuleInit {
 
   constructor(
     private readonly db: Db,
+    private readonly rt: RealtimeService,
     private readonly notif: NotificacionesService,
     private readonly auditoria: AuditoriaService,
     private readonly exp: ExperienciasService,
@@ -127,6 +129,11 @@ export class EventosService implements OnModuleInit {
       const a = await this.insertarActividad(q, s, { ...d, zonaId: d.zonaId ?? l.zona_id, puntos: 0 }, s.localId!, 'pendiente', d.lugar?.trim() || `${l.nombre}, local ${l.numero_local}`);
       await this.avisarAdmins(q, s.recintoId, 'evento_pendiente', 'Evento por aprobar', `${l.nombre} propone «${d.titulo}»`, { actividadId: a.id });
       return a;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'eventos', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'eventos', {});
+      return r;
     });
   }
 
@@ -137,6 +144,11 @@ export class EventosService implements OnModuleInit {
       const a = await this.insertarActividad(q, s, d, d.localId ?? null, 'aprobada', d.lugar?.trim() || z?.nombre || 'Paseo Aranjuez');
       await this.auditoria.registrar(q, s.sub, 'crear_evento', 'actividad', a.id, null, a);
       return a;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'eventos', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'eventos', {});
+      return r;
     });
   }
 
@@ -154,6 +166,11 @@ export class EventosService implements OnModuleInit {
           estado === 'aprobada' ? `«${antes.titulo}» ya aparece en la app y Jarvis lo recomienda` : `«${antes.titulo}»: ${comentario}`, { actividadId: id });
       }
       return a;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'eventos', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'eventos', {});
+      return r;
     });
   }
 

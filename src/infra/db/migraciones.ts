@@ -856,6 +856,10 @@ alter table local add column if not exists foto_url text;
 alter table local add column if not exists banner_url text;
 `,
   },
+  { id: '010_promociones_canje', sql: /* sql */ `
+alter table promocion add column costo_puntos int check (costo_puntos > 0);
+alter table recompensa add column promocion_id uuid unique references promocion(id);
+` },
 ];
 
 
@@ -863,4 +867,5 @@ alter table local add column if not exists banner_url text;
 export const TABLAS_PROPIAS = [
   ...new Set(MIGRACIONES.flatMap((m) => [...m.sql.matchAll(/create table (?:if not exists )?(\w+)/g)].map((x) => x[1]))),
   '_migracion',
+
 ];

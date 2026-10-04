@@ -31,6 +31,7 @@ export class RealtimeGateway implements OnGatewayConnection {
     }
     socket.data.sesion = s;
     void socket.join(`usuario:${s.sub}`);
+    void socket.join(`catalogo:${s.recintoId}`);
     if (s.localId) void socket.join(`local:${s.localId}`);
     if (['admin', 'marketing', 'analista'].includes(s.rol)) void socket.join(`sala:${s.recintoId}`);
     this.log.log(`Socket conectado: ${s.rol} (${s.sub})${s.localId ? ` en local:${s.localId}` : ''}`);

@@ -106,11 +106,11 @@ export class ComprasService implements OnModuleInit {
       if (cmd.pase) {
         cliente = await this.identidad.verificarPase(q, cmd.pase, capturadoEn, !!cmd.offline);
         origen = 'qr';
-      } else if (cmd.clienteId && cmd.codigoCliente) {
-        cliente = await this.identidad.verificarCodigoCliente(q, cmd.clienteId, cmd.codigoCliente, capturadoEn);
+      } else if (cmd.codigoCliente) {
+        cliente = await this.identidad.verificarPase(q, 'PP1:' + cmd.codigoCliente, capturadoEn, !!cmd.offline);
         origen = 'codigo';
       } else {
-        throw new BadRequestException('Escanea el pase del cliente o identifícalo por su celular');
+        throw new BadRequestException('Escanea el pase del cliente o ingresa su código único');
       }
 
       const local = await one<{ id: string; categoria: string }>(
@@ -312,7 +312,7 @@ export class ComprasService implements OnModuleInit {
     const m = await this.movimientosLocal(localId, f);
     const filas = [
       ...m.compras.map((c: any) => ({
-        tipo: 'compra', fecha: new Date(c.creado_en).toISOString(), monto_bs: Number(c.monto_bs).toFixed(2), puntos: c.puntos,
+        tipo: 'venta', fecha: new Date(c.creado_en).toISOString(), monto_bs: Number(c.monto_bs).toFixed(2), puntos: c.puntos,
         categoria: c.categoria, factura: c.nro_factura ?? '', cuenta: c.cuenta ?? '', cliente: c.cliente, estado: c.estado,
       })),
       ...m.canjes.map((c: any) => ({
