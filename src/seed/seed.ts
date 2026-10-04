@@ -137,9 +137,9 @@ async function main() {
     await insertarLote(
       q, 'local',
       ['id', 'recinto_id', 'nombre', 'categoria_id', 'piso', 'sector', 'numero_local', 'coord_x', 'coord_y', 'zona_id', 'descripcion', 'palabras_clave', 'nit', 'codigo_puerta',
-        'horario_apertura', 'horario_cierre', 'dias_atencion', 'telefono'],
+        'horario_apertura', 'horario_cierre', 'dias_atencion', 'telefono', 'foto_url', 'banner_url'],
       locales.map((l) => [l.id, recintoId, l.nombre, catId.get(l.categoria), l.piso, l.sector, l.numero, l.x, l.y, l.zona, l.descripcion, l.clave, l.nit,
-        `L-${slug(l.nombre).toUpperCase().padEnd(8, 'X').slice(0, 8)}`, l.horario[0], l.horario[1], l.dias, l.telefono || null]),
+        `L-${slug(l.nombre).toUpperCase().padEnd(8, 'X').slice(0, 8)}`, l.horario[0], l.horario[1], l.dias, l.telefono || null, l.foto_url ?? null, l.banner_url ?? null]),
     );
     const loc = (n: string) => locales.find((l) => l.nombre === n)!;
     const abiertoEn = (l: (typeof locales)[number], dow: number, h: number) => l.dias.includes(dow) && h >= horaDecimal(l.horario[0]) && h <= horaDecimal(l.horario[1]);
@@ -619,7 +619,7 @@ async function main() {
           }
         }
       }
-      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, c.id, total, franjaIni, franjaFin, creado]);
+      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, c.id, total, franjaIni, franjaFin, creado, 'comida', null]);
     }
 
     // -------------------------------------------------------------- María: estado vivo para probar la app y a Jarvis
@@ -640,7 +640,7 @@ async function main() {
           new Date(ahora.getTime() - (haceMin + 5) * 60_000), new Date(ahora.getTime() - haceMin * 60_000), estado === 'listo' ? new Date(ahora.getTime() - 3 * 60_000) : null, null, 0]);
         filasItem.push([randomUUID(), subId, p.id, p.nombre, cant, p.precio]);
       }
-      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, maria.id, total, franjaIni, new Date(franjaIni.getTime() + 30 * 60_000), new Date(ahora.getTime() - 40 * 60_000)]);
+      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, maria.id, total, franjaIni, new Date(franjaIni.getTime() + 30 * 60_000), new Date(ahora.getTime() - 40 * 60_000), 'comida', null]);
       // Visita abierta y parqueo en curso
       filasVisita.push([randomUUID(), recintoId, maria.id, 'parqueo', 'Parqueo', new Date(ahora.getTime() - 50 * 60_000), null, 0]);
       filasParqueo.push([maria.id, `T-${codigoLegible(6)}`, new Date(ahora.getTime() - 55 * 60_000), null, null, 0, 0, 0, 'abierto']);
@@ -688,7 +688,7 @@ async function main() {
     await insertarLote(q, 'checkin_local', ['id', 'cliente_id', 'local_id', 'entrada_en', 'salida_en', 'con_compra', 'puntos', 'origen'], filasCheckin);
     await insertarLote(q, 'canje', ['id', 'cliente_id', 'recompensa_id', 'codigo', 'costo_puntos', 'estado', 'emitido_en', 'expira_en', 'validado_por', 'validado_local', 'validado_en'], filasCanje);
     await insertarLote(q, 'busqueda', ['recinto_id', 'id_seudonimo', 'termino', 'origen', 'resultados', 'creado_en'], filasBusqueda);
-    await insertarLote(q, 'pedido', ['id', 'recinto_id', 'codigo', 'cliente_id', 'total_bs', 'franja_inicio', 'franja_fin', 'creado_en'], filasPedido);
+    await insertarLote(q, 'pedido', ['id', 'recinto_id', 'codigo', 'cliente_id', 'total_bs', 'franja_inicio', 'franja_fin', 'creado_en', 'tipo', 'fecha_estimada_retiro'], filasPedido);
     await insertarLote(q, 'subpedido', ['id', 'pedido_id', 'local_id', 'estado', 'total_bs', 'codigo_retiro', 'pin', 'pago', 'confirmado_en', 'preparando_en', 'listo_en', 'entregado_en', 'puntos'], filasSub);
     await insertarLote(q, 'subpedido_item', ['id', 'subpedido_id', 'producto_id', 'nombre', 'cantidad', 'precio_bs'], filasItem);
     await insertarLote(q, 'reclamo_drop', ['drop_id', 'cliente_id', 'usado', 'creado_en'], filasReclamoDrop);

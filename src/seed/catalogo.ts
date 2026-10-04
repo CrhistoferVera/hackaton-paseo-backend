@@ -37,6 +37,8 @@ export interface LocalSeed {
   horario: [string, string];
   dias: number[];
   telefono: string;
+  foto_url?: string | null;
+  banner_url?: string | null;
 }
 
 const TODOS = [0, 1, 2, 3, 4, 5, 6];
@@ -46,7 +48,8 @@ const SIN_LUNES = [0, 2, 3, 4, 5, 6];
 const L = (
   nombre: string, categoria: string, piso: 'N1' | 'N2' | 'T', sector: string, numero: string, x: number, y: number, ticket: [number, number],
   descripcion: string, clave: string[], horario: [string, string] = ['10:00', '22:00'], dias = TODOS, telefono = '',
-): LocalSeed => ({ nombre, categoria, piso, sector, numero, x, y, ticket, descripcion, clave, horario, dias, telefono });
+  foto_url: string | null = null, banner_url: string | null = null,
+): LocalSeed => ({ nombre, categoria, piso, sector, numero, x, y, ticket, descripcion, clave, horario, dias, telefono, foto_url, banner_url });
 
 export const LOCALES: LocalSeed[] = [
   // Nivel 1
@@ -80,8 +83,8 @@ export const LOCALES: LocalSeed[] = [
   L('Mascotas Felices', 'Hogar', 'N2', 'B', '254', 500, 300, [40, 300], 'Accesorios y alimento para mascotas', ['mascotas', 'perro', 'gato', 'croquetas', 'collar'], ['10:00', '21:00'], TODOS, '2-2794254'),
   L('Fotostudio', 'Servicios', 'N2', 'C', '258', 830, 300, [30, 250], 'Fotos carnet e impresión', ['fotos', 'impresión', 'foto carnet', 'fotocopias'], ['09:30', '19:30'], SIN_DOMINGO, '2-2794258'),
   // Terrazas
-  L('Panchita', 'Comida', 'T', 'P', 'T01', 70, 120, [18, 60], 'Salteñas y comida típica', ['salteña', 'almuerzo', 'api', 'pastel', 'comida típica'], ['08:00', '22:00'], TODOS, '7-1234501'),
-  L('Guajojó', 'Comida', 'T', 'P', 'T02', 200, 120, [25, 75], 'Comida oriental boliviana', ['majadito', 'almuerzo', 'cuñapé', 'sonso', 'masaco'], ['11:00', '22:00'], TODOS, '7-1234502'),
+  L('Panchita', 'Comida', 'T', 'P', 'T01', 70, 120, [18, 60], 'Salteñas y comida típica', ['salteña', 'almuerzo', 'api', 'pastel', 'comida típica'], ['08:00', '22:00'], TODOS, '7-1234501', '/uploads/locales/Panchita.jpeg', '/uploads/locales/Panchita.jpeg'),
+  L('Guajojó', 'Comida', 'T', 'P', 'T02', 200, 120, [25, 75], 'Comida oriental boliviana', ['majadito', 'almuerzo', 'cuñapé', 'sonso', 'masaco'], ['11:00', '22:00'], TODOS, '7-1234502', '/uploads/locales/Guajojo.jpeg', '/uploads/locales/Guajojo.jpeg'),
   L('Napoli Pizzería', 'Comida', 'T', 'P', 'T03', 330, 120, [30, 140], 'Pizza a la piedra', ['pizza', 'lasaña', 'pasta', 'italiana'], ['11:00', '23:00'], TODOS, '7-1234503'),
   L('Sushi Kai', 'Comida', 'T', 'P', 'T04', 460, 120, [45, 160], 'Sushi y ramen', ['sushi', 'ramen', 'japonesa', 'makis'], ['12:00', '22:30'], TODOS, '7-1234504'),
   L('Pollos Copacabana', 'Comida', 'T', 'P', 'T05', 70, 480, [25, 90], 'Pollo frito y broaster', ['pollo', 'broaster', 'alitas', 'papas fritas'], ['10:30', '23:00'], TODOS, '7-1234505'),
@@ -92,6 +95,71 @@ export const LOCALES: LocalSeed[] = [
   L('Bowling Strike', 'Entretenimiento', 'T', 'K', 'T12', 700, 470, [40, 200], 'Boliche y juegos', ['bowling', 'boliche', 'billar', 'juegos'], ['14:00', '23:59'], TODOS, '7-1234512'),
   L('Terraza Lounge', 'Comida', 'T', 'L', 'T20', 900, 200, [40, 220], 'Bar y comida de autor', ['bar', 'cena', 'cóctel', 'tragos', 'música en vivo'], ['12:00', '23:59'], TODOS, '7-1234520'),
   L('Café Tostado', 'Comida', 'T', 'L', 'T22', 900, 450, [15, 45], 'Café y sándwiches', ['café', 'sándwich', 'desayuno', 'té'], ['08:30', '21:00'], TODOS, '7-1234522'),
+  // --- Locales Reales Paseo Aranjuez ---
+  L("Cinnabon", "Comida", "N1", "A", "110", 100, 140, [20, 80], "Comida- postres-bebidas", ["cinnabon","comida","comida-","postres-bebidas"], ['10:00', '22:00'], TODOS, '7-0010000', "/uploads/locales/Cinnabon.jpeg", "/uploads/locales/Cinnabon.jpeg"),
+  L("Bold", "Moda", "N1", "B", "111", 170, 200, [80, 500], "Ropa", ["bold","moda","ropa"], ['10:00', '22:00'], TODOS, '7-0010001', "/uploads/locales/Bold.jpeg", "/uploads/locales/Bold.jpeg"),
+  L("Fairplay Kids", "Moda", "N1", "C", "112", 240, 260, [80, 500], "Ropa", ["fairplay kids","moda","ropa"], ['10:00', '22:00'], TODOS, '7-0010002', "/uploads/locales/kids.jpeg", "/uploads/locales/kids.jpeg"),
+  L("Lili Pink", "Moda", "N1", "A", "113", 310, 320, [80, 500], "Ropa-mujer", ["lili pink","moda","ropa-mujer"], ['10:00', '22:00'], TODOS, '7-0010003', "/uploads/locales/LiliPink.jpeg", "/uploads/locales/LiliPink.jpeg"),
+  L("Legend", "Moda", "N1", "B", "114", 380, 380, [80, 500], "Ropa", ["legend","moda","ropa"], ['10:00', '22:00'], TODOS, '7-0010004', "/uploads/locales/Legend.jpeg", "/uploads/locales/Legend1.jpeg"),
+  L("TucTuc", "Moda", "N1", "C", "115", 450, 440, [80, 500], "Ropa de ni�os", ["tuctuc","moda","ropa","ni�os"], ['10:00', '22:00'], TODOS, '7-0010005', "/uploads/locales/tuctuc.jpeg", "/uploads/locales/tuctuc.jpeg"),
+  L("Puma", "Moda", "N1", "A", "116", 520, 140, [80, 500], "Ropa", ["puma","moda","ropa"], ['10:00', '22:00'], TODOS, '7-0010006', "/uploads/locales/Puma.jpeg", "/uploads/locales/puma1.jpeg"),
+  L("Opticas Pauker", "Moda", "N1", "B", "117", 590, 200, [80, 500], "Lentes", ["opticas pauker","moda","lentes"], ['10:00', '22:00'], TODOS, '7-0010007', "/uploads/locales/Opticas_Pauker.jpeg", "/uploads/locales/Opticas_Pauker.jpeg"),
+  L("Joyerias Imperio", "Moda", "N1", "C", "118", 660, 260, [80, 500], "Joyas", ["joyerias imperio","moda","joyas"], ['10:00', '22:00'], TODOS, '7-0010008', "/uploads/locales/joyeriaImperio.jpeg", "/uploads/locales/Joyerias.jpeg"),
+  L("Banco Ganadero", "Servicios", "N1", "A", "119", 730, 320, [80, 500], "Cajero automatico", ["banco ganadero","servicios","cajero","automatico"], ['10:00', '22:00'], TODOS, '7-0010009', "/uploads/locales/bancoGanadero.jpeg", "/uploads/locales/bancoGanadero.jpeg"),
+  L("Mercantil Santa Cruz", "Servicios", "N1", "B", "120", 800, 380, [80, 500], "Cajero automatico", ["mercantil santa cruz","servicios","cajero","automatico"], ['10:00', '22:00'], TODOS, '7-0010010', "/uploads/locales/MercantilSantaCruz.jpeg", "/uploads/locales/MercantilSantaCruz.jpeg"),
+  L("BancoSol", "Servicios", "N1", "C", "121", 870, 440, [80, 500], "Cajero automatico", ["bancosol","servicios","cajero","automatico"], ['10:00', '22:00'], TODOS, '7-0010011', "/uploads/locales/BancoSol.jpeg", "/uploads/locales/BancoSol.jpeg"),
+  L("Face Phone", "Tecnología", "N1", "A", "122", 140, 140, [80, 500], "Fundas de celular", ["face phone","tecnología","fundas","celular"], ['10:00', '22:00'], TODOS, '7-0010012', "/uploads/locales/FacePhone.jpeg", "/uploads/locales/FacePhone.jpeg"),
+  L("ECLAT", "Accesorios", "N1", "B", "123", 210, 200, [80, 500], "Perfumes arabes", ["eclat","accesorios","perfumes","arabes"], ['10:00', '22:00'], TODOS, '7-0010013', "/uploads/locales/Eclat.jpeg", "/uploads/locales/Eclat.jpeg"),
+  L("Cosbelle", "Accesorios", "N1", "C", "124", 280, 260, [80, 500], "Perfumes y cosmeticos", ["cosbelle","accesorios","perfumes","cosmeticos"], ['10:00', '22:00'], TODOS, '7-0010014', "/uploads/locales/Cosbelle.jpeg", "/uploads/locales/Cosbelle.jpeg"),
+  L("Kosi", "Moda", "N1", "A", "125", 350, 320, [80, 500], "Ropa de mujer", ["kosi","moda","ropa","mujer"], ['10:00', '22:00'], TODOS, '7-0010015', "/uploads/locales/Kosi.jpeg", "/uploads/locales/Kosi.jpeg"),
+  L("Status", "Moda", "N1", "B", "126", 420, 380, [80, 500], "Ropa de mujer elegante", ["status","moda","ropa","mujer","elegante"], ['10:00', '22:00'], TODOS, '7-0010016', "/uploads/locales/Status.jpeg", "/uploads/locales/Status.jpeg"),
+  L("Burbank", "Moda", "N1", "C", "127", 490, 440, [80, 500], "Ropa juvenil", ["burbank","moda","ropa","juvenil"], ['10:00', '22:00'], TODOS, '7-0010017', null, null),
+  L("Moda Online", "Moda", "N1", "A", "128", 560, 140, [80, 500], "Ropa de mujer", ["moda online","moda","ropa","mujer"], ['10:00', '22:00'], TODOS, '7-0010018', "/uploads/locales/ModaOnline.jpeg", "/uploads/locales/ModaOnline.jpeg"),
+  L("Impulse", "Moda", "N1", "B", "129", 630, 200, [80, 500], "tenis y ropa", ["impulse","moda","tenis","ropa"], ['10:00', '22:00'], TODOS, '7-0010019', null, null),
+  L("Amore", "Moda", "N1", "C", "130", 700, 260, [80, 500], "Carteras, cinturones de cuero", ["amore","moda","carteras","cinturones","cuero"], ['10:00', '22:00'], TODOS, '7-0010020', "/uploads/locales/Amore.jpeg", "/uploads/locales/Amore.jpeg"),
+  L("Hermassi", "Moda", "N1", "A", "131", 770, 320, [80, 500], "Ropa Bolsos", ["hermassi","moda","ropa","bolsos"], ['10:00', '22:00'], TODOS, '7-0010021', "/uploads/locales/Hermass.jpeg", "/uploads/locales/Hermass.jpeg"),
+  L("Manhattan", "Moda", "N1", "B", "132", 840, 380, [80, 500], "Camisas, Pantalones varon", ["manhattan","moda","camisas","pantalones","varon"], ['10:00', '22:00'], TODOS, '7-0010022', "/uploads/locales/Manhattan.jpeg", "/uploads/locales/Manhattan.jpeg"),
+  L("Tuctoys", "Regalos", "N1", "C", "133", 110, 440, [80, 500], "Juguetes", ["tuctoys","regalos","juguetes"], ['10:00', '22:00'], TODOS, '7-0010023', "/uploads/locales/TucToys.jpeg", "/uploads/locales/TucToys.jpeg"),
+  L("EuroStyle", "Moda", "N1", "A", "134", 180, 140, [80, 500], "Ropa", ["eurostyle","moda","ropa"], ['10:00', '22:00'], TODOS, '7-0010024', "/uploads/locales/Eurostyle.jpeg", "/uploads/locales/Eurostyle.jpeg"),
+  L("Top Coleccion", "Moda", "N2", "B", "235", 250, 200, [80, 500], "Tienda de ropa", ["top coleccion","moda","tienda","ropa"], ['10:00', '22:00'], TODOS, '7-0010025', null, null),
+  L("Joyas Diego", "Moda", "N2", "C", "236", 320, 260, [80, 500], "Venta de joyas", ["joyas diego","moda","venta","joyas"], ['10:00', '22:00'], TODOS, '7-0010026', null, null),
+  L("Fossil", "Moda", "N2", "A", "237", 390, 320, [80, 500], "Venta de mochilas, carteras", ["fossil","moda","venta","mochilas","carteras"], ['10:00', '22:00'], TODOS, '7-0010027', null, null),
+  L("Quiro", "Servicios", "N2", "B", "238", 460, 380, [80, 500], "Negocio de celigrafia", ["quiro","servicios","negocio","celigrafia"], ['10:00', '22:00'], TODOS, '7-0010028', null, null),
+  L("Bolivia Fitness", "Servicios", "N2", "C", "239", 530, 440, [80, 500], "de suplementos me", ["bolivia fitness","servicios","suplementos"], ['10:00', '22:00'], TODOS, '7-0010029', null, null),
+  L("Crocs", "Moda", "N2", "A", "210", 600, 140, [80, 500], "Venta de cross", ["crocs","moda","venta","cross"], ['10:00', '22:00'], TODOS, '7-0010030', null, null),
+  L("Tigo", "Tecnología", "N2", "B", "211", 670, 200, [80, 500], "Telecomunicaciones", ["tigo","tecnología","telecomunicaciones"], ['10:00', '22:00'], TODOS, '7-0010031', null, null),
+  L("Lamelin", "Accesorios", "N2", "C", "212", 740, 260, [80, 500], "Skincoreano", ["lamelin","accesorios","skincoreano"], ['10:00', '22:00'], TODOS, '7-0010032', null, null),
+  L("Nailon Express", "Moda", "N2", "A", "213", 810, 320, [80, 500], "U�as", ["nailon express","moda","u�as"], ['10:00', '22:00'], TODOS, '7-0010033', null, null),
+  L("Apple Land", "Tecnología", "N2", "B", "214", 880, 380, [80, 500], "Apple case", ["apple land","tecnología","apple","case"], ['10:00', '22:00'], TODOS, '7-0010034', null, null),
+  L("Alto Cavaliere", "Moda", "N2", "C", "215", 150, 440, [80, 500], "Venta de ropa de cuero", ["alto cavaliere","moda","venta","ropa","cuero"], ['10:00', '22:00'], TODOS, '7-0010035', null, null),
+  L("Gool Store", "Moda", "N2", "A", "216", 220, 140, [80, 500], "Venta De medias", ["gool store","moda","venta","medias"], ['10:00', '22:00'], TODOS, '7-0010036', null, null),
+  L("Totto", "Moda", "N2", "B", "217", 290, 200, [80, 500], "Mochilas, poleras y accesorios", ["totto","moda","mochilas","poleras","accesorios"], ['10:00', '22:00'], TODOS, '7-0010037', null, null),
+  L("Coton Viu", "Moda", "N2", "C", "218", 360, 260, [80, 500], "Venta de ropa para damas", ["coton viu","moda","venta","ropa","para","damas"], ['10:00', '22:00'], TODOS, '7-0010038', null, null),
+  L("Baby Corp", "Moda", "N2", "A", "219", 430, 320, [80, 500], "Venta de accesorios para bebes", ["baby corp","moda","venta","accesorios","para","bebes"], ['10:00', '22:00'], TODOS, '7-0010039', null, null),
+  L("Deaguayo", "Moda", "N2", "B", "220", 500, 380, [80, 500], "Carteras", ["deaguayo","moda","carteras"], ['10:00', '22:00'], TODOS, '7-0010040', null, null),
+  L("Mision Simi", "Moda", "N2", "C", "221", 570, 440, [80, 500], "Venta de ropa para damas", ["mision simi","moda","venta","ropa","para","damas"], ['10:00', '22:00'], TODOS, '7-0010041', null, null),
+  L("Avanza Rever", "Accesorios", "N2", "A", "222", 640, 140, [80, 500], "Venta de maquillaje", ["avanza rever","accesorios","venta","maquillaje"], ['10:00', '22:00'], TODOS, '7-0010042', null, null),
+  L("Almacen de Pizzas", "Comida", "T", "P", "T23", 710, 200, [20, 80], "Venta de Pizzas", ["almacen de pizzas","comida","venta","pizzas"], ['10:00', '22:00'], TODOS, '7-0010043', "/uploads/locales/AlmacenDePizzas.jpeg", "/uploads/locales/AlmacenDePizzas.jpeg"),
+  L("Flavor Burst", "Comida", "T", "P", "T24", 780, 260, [20, 80], "Helado", ["flavor burst","comida","helado"], ['10:00', '22:00'], TODOS, '7-0010044', "/uploads/locales/FlavorBurst.jpeg", "/uploads/locales/FlavorBurst.jpeg"),
+  L("Orah", "Accesorios", "T", "P", "T25", 850, 320, [80, 500], "Javones artesanales", ["orah","accesorios","javones","artesanales"], ['10:00', '22:00'], TODOS, '7-0010045', "/uploads/locales/Orah.jpeg", "/uploads/locales/Orah.jpeg"),
+  L("Acai Golden", "Comida", "T", "P", "T26", 120, 380, [20, 80], "Variedad de helados de acai", ["acai golden","comida","variedad","helados","acai"], ['10:00', '22:00'], TODOS, '7-0010046', "/uploads/locales/AcaiGolden.jpeg", "/uploads/locales/AcaiGolden.jpeg"),
+  L("Parrilleros", "Comida", "T", "P", "T27", 190, 440, [20, 80], "Almuerzo completo con especialidad en platos a la parrilla", ["parrilleros","comida","almuerzo","completo","con","especialidad","platos"], ['10:00', '22:00'], TODOS, '7-0010047', "/uploads/locales/Parrilleros.jpeg", "/uploads/locales/Parrilleros.jpeg"),
+  L("Chotto Matte", "Comida", "T", "P", "T28", 260, 140, [20, 80], "Restaurante de ramens", ["chotto matte","comida","restaurante","ramens"], ['10:00', '22:00'], TODOS, '7-0010048', "/uploads/locales/ChottoMatte.jpeg", "/uploads/locales/ChottoMatte.jpeg"),
+  L("Hoy Hay Cafe", "Comida", "T", "P", "T29", 330, 200, [20, 80], "Venta de Caf�", ["hoy hay cafe","comida","venta","caf�"], ['10:00', '22:00'], TODOS, '7-0010049', "/uploads/locales/HoyHay.jpeg", "/uploads/locales/HoyHay.jpeg"),
+  L("La Quilquina", "Comida", "T", "P", "T30", 400, 260, [20, 80], "Venta de comida Boliviana", ["la quilquina","comida","venta","boliviana"], ['10:00', '22:00'], TODOS, '7-0010050', "/uploads/locales/LaQuilquina.jpeg", "/uploads/locales/LaQuilquina.jpeg"),
+  L("La Sangucheria", "Comida", "T", "P", "T31", 470, 320, [20, 80], "Variedad de Sandwich y hamburguesas", ["la sangucheria","comida","variedad","sandwich","hamburguesas"], ['10:00', '22:00'], TODOS, '7-0010051', "/uploads/locales/LaSangucheria.jpeg", "/uploads/locales/LaSangucheria.jpeg"),
+  L("Waffle King", "Comida", "T", "P", "T32", 540, 380, [20, 80], "Waffles, postres", ["waffle king","comida","waffles","postres"], ['10:00', '22:00'], TODOS, '7-0010052', "/uploads/locales/WaffleKing.jpeg", "/uploads/locales/WaffleKing.jpeg"),
+  L("Deli Stanbul", "Comida", "T", "P", "T34", 680, 140, [20, 80], "Kebab Turco", ["deli stanbul","comida","kebab","turco"], ['10:00', '22:00'], TODOS, '7-0010054', "/uploads/locales/DeliStanbul.jpeg", "/uploads/locales/DeliStanbul.jpeg"),
+  L("Solo Pasta", "Comida", "T", "P", "T36", 820, 260, [20, 80], "Pasta y lasa�a", ["solo pasta","comida","pasta","lasa�a"], ['10:00', '22:00'], TODOS, '7-0010056', "/uploads/locales/SoloPastas.jpeg", "/uploads/locales/SoloPastas.jpeg"),
+  L("Pawitos", "Comida", "T", "P", "T37", 890, 320, [20, 80], "Refrescos y bobas", ["pawitos","comida","refrescos","bobas"], ['10:00', '22:00'], TODOS, '7-0010057', "/uploads/locales/Pawitos.jpeg", "/uploads/locales/Pawitos.jpeg"),
+  L("Sky Games", "Entretenimiento", "T", "K", "T38", 160, 380, [80, 500], "servicio de entretenimiento", ["sky games","entretenimiento","servicio"], ['10:00', '22:00'], TODOS, '7-0010058', "/uploads/locales/SkyGames.jpeg", "/uploads/locales/SkyGames.jpeg"),
+  L("Gang Nam", "Comida", "T", "P", "T39", 230, 440, [20, 80], "Comida asiatica", ["gang nam","comida","asiatica"], ['10:00', '22:00'], TODOS, '7-0010059', null, null),
+  L("Pata Negra", "Comida", "T", "P", "T10", 300, 140, [20, 80], "Comida espa�ola", ["pata negra","comida","espa�ola"], ['10:00', '22:00'], TODOS, '7-0010060', "/uploads/locales/Patanegra.jpeg", "/uploads/locales/Patanegra.jpeg"),
+  L("Sabor Chipotle", "Comida", "T", "P", "T11", 370, 200, [20, 80], "Comida Mexicana", ["sabor chipotle","comida","mexicana"], ['10:00', '22:00'], TODOS, '7-0010061', null, null),
+  L("Cayenna", "Comida", "T", "P", "T12", 440, 260, [20, 80], "Comida Boliviana", ["cayenna","comida","boliviana"], ['10:00', '22:00'], TODOS, '7-0010062', null, null),
+  L("Churros Calientes", "Comida", "T", "L", "T13", 510, 320, [20, 80], "Cocteleria", ["churros calientes","comida","cocteleria"], ['10:00', '22:00'], TODOS, '7-0010063', null, null),
+  L("Rissis", "Comida", "T", "L", "T14", 580, 380, [20, 80], "Bar", ["rissis","comida","bar"], ['10:00', '22:00'], TODOS, '7-0010064', null, null),
+  L("Mona Lisa", "Comida", "T", "L", "T15", 650, 440, [20, 80], "Bar", ["mona lisa","comida","bar"], ['10:00', '22:00'], TODOS, '7-0010065', null, null),
 ];
 
 /** [nombre, precio Bs, stock, descripción, minutos de preparación (solo comida)] */
