@@ -1,4 +1,8 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { ArchivoSubido } from '../../common/archivos.js';
+import { OidoJarvis } from '../jarvis/oido.service.js';
+import { VozNeuralService } from '../jarvis/voz-neural.service.js';
 import { z } from 'zod';
 import { Roles, SesionActual } from '../../common/auth/auth.guard.js';
 import type { Sesion } from '../../common/auth/tokens.js';
@@ -132,11 +136,33 @@ export class PanelLocalController {
 @Roles('admin', 'marketing', 'analista')
 @Controller('admin/asistente')
 export class AsistenteController {
-  constructor(private readonly asistente: AsistenteAdmin) {}
+  constructor(
+    private readonly asistente: AsistenteAdmin,
+    private readonly oido: OidoJarvis,
+    private readonly sintetizador: VozNeuralService,
+  ) {}
 
   @Post()
   preguntar(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ pregunta: z.string().min(1).max(400) }))) d: { pregunta: string }) {
     return this.asistente.preguntar(s, d.pregunta);
+  }
+
+  /**
+   * Preguntar por voz: el navegador manda el audio (campo «audio»), el servidor lo transcribe con
+   * Whisper local y el asistente responde en la misma llamada. El audio no se guarda.
+   */
+  @Post('voz')
+  @UseInterceptors(FileInterceptor('audio', { limits: { fileSize: 6 * 1024 * 1024 } }))
+  async voz(@SesionActual() s: Sesion, @UploadedFile() audio: ArchivoSubido) {
+    const r = await this.oido.transcribir(audio?.buffer);
+    return { ...r, respuesta: r.texto ? await this.asistente.preguntar(s, r.texto) : null };
+  }
+
+  /** La respuesta en voz alta, con la misma voz neuronal en español que usa Jarvis. */
+  @Post('hablar')
+  async hablar(@Body(new ZodPipe(z.object({ texto: z.string().min(1).max(900), velocidad: z.number().min(0.7).max(1.4).optional() }))) d: { texto: string; velocidad?: number }) {
+    const r = await this.sintetizador.sintetizar(d.texto, d.velocidad);
+    return { url: `/voz/${r.id}.mp3`, segundos: r.segundos, latenciaMs: r.latenciaMs };
   }
 
   @Get('historial')

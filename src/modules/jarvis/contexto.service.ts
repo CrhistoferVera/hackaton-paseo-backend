@@ -3,9 +3,9 @@ import { Db, many } from '../../infra/db/db.js';
 import { ahoraBolivia } from '../../common/util.js';
 import { OrientacionService } from '../orientacion/orientacion.service.js';
 import { NOMBRE_PISO } from '../orientacion/domain/grafo.js';
-import { de, dinero, lugar as lugarVoz } from './voz.js';
+import { dinero } from './voz.js';
 
-export type TipoOferta = 'promocion' | 'drop' | 'moneda' | 'pedido_listo' | 'mision';
+export type TipoOferta = 'promocion' | 'drop' | 'pedido_listo' | 'mision';
 
 export interface Oferta {
   tipo: TipoOferta;
@@ -14,7 +14,7 @@ export interface Oferta {
   nodoId: string;
   lugar: string;
   localId?: string;
-  hitoCodigo?: string;
+  dropId?: string;
   puntos?: number;
   /** Tráfico de la zona en la última hora: sirve para preferir pasillos poco concurridos. */
   trafico?: number;
@@ -34,16 +34,13 @@ export class ContextoService {
   async cercanos(recintoId: string, clienteId: string, nodoId: string, radioM: number): Promise<Oferta[]> {
     const { g, dist } = await this.orientacion.distancias(recintoId, nodoId, radioM);
     const locales = new Map<string, { nodo: string; metros: number }>();
-    const hitos = new Map<string, { nodo: string; metros: number }>();
     for (const [id, m] of dist) {
       const n = g.nodos.get(id)!;
       if (n.localId) locales.set(n.localId, { nodo: id, metros: m });
-      if (n.hitoId) hitos.set(n.hitoId, { nodo: id, metros: m });
     }
     const ofertas: Oferta[] = [];
     const { fecha, dia, hhmm } = ahoraBolivia();
     const idsLocales = [...locales.keys()];
-    const idsHitos = [...hitos.keys()];
 
     if (idsLocales.length) {
       const promos = await many<any>(
@@ -81,31 +78,20 @@ export class ContextoService {
         const d = locales.get(m.local_id)!;
         ofertas.push({ tipo: 'mision', texto: `tu misión en ${m.nombre} da ${m.recompensa_puntos} puntos con la primera compra`, metros: d.metros, nodoId: d.nodo, lugar: m.nombre, localId: m.local_id, puntos: m.recompensa_puntos });
       }
-    }
-
-    if (idsHitos.length) {
-      const filas = await many<any>(
+      // Drops abiertos en locales cercanos que el cliente aún no reclamó
+      const drops = await many<any>(
         this.db,
-        `select h.id, h.codigo, h.puntos, z.nombre as zona, z.piso,
-                exists (select 1 from reclamo_hito r where r.hito_id = h.id and r.cliente_id = $2 and r.fecha = $3::date) as reclamado,
-                (select count(*)::int from evento e where e.zona_id = h.zona_id and e.creado_en > now() - interval '60 minutes') as trafico,
-                (select json_build_object('id', d.id, 'mensaje', d.mensaje, 'producto', p.nombre, 'precio', d.precio_especial)
-                   from drop_espacial d join producto p on p.id = d.producto_id
-                   where d.zona_id = h.zona_id and now() between d.inicio and d.fin
-                     and not exists (select 1 from reclamo_drop r where r.drop_id = d.id and r.cliente_id = $2)
-                   order by d.creado_en desc limit 1) as drop
-         from hito h join zona z on z.id = h.zona_id where h.id = any($1::uuid[]) and h.activo`,
-        [idsHitos, clienteId, fecha],
+        `select d.id, p.nombre as producto, d.precio_especial, l.id as local_id, l.nombre, l.piso, l.numero_local,
+                (select count(*)::int from evento e where e.zona_id = l.zona_id and e.creado_en > now() - interval '60 minutes') as trafico
+         from drop_espacial d join producto p on p.id = d.producto_id join local l on l.id = coalesce(d.local_id, p.local_id)
+         where l.id = any($1::uuid[]) and now() between d.inicio and d.fin
+           and d.max_reclamos > (select count(*) from reclamo_drop r where r.drop_id = d.id)
+           and not exists (select 1 from reclamo_drop r where r.drop_id = d.id and r.cliente_id = $2)`,
+        [idsLocales, clienteId],
       );
-      for (const h of filas) {
-        const d = hitos.get(h.id)!;
-        const lugar = `${lugarVoz(h.zona)} (${NOMBRE_PISO[h.piso]})`;
-        if (h.drop) {
-          ofertas.push({ tipo: 'drop', texto: `en el cartel ${de(lugar)} hay un Drop: ${h.drop.producto} a ${dinero(h.drop.precio)}`, metros: d.metros, nodoId: d.nodo, lugar, hitoCodigo: `PPH:${h.codigo}`, trafico: h.trafico });
-        }
-        if (!h.reclamado) {
-          ofertas.push({ tipo: 'moneda', texto: `en el cartel ${de(lugar)} hay una moneda de ${h.puntos} puntos`, metros: d.metros, nodoId: d.nodo, lugar, hitoCodigo: `PPH:${h.codigo}`, puntos: h.puntos, trafico: h.trafico });
-        }
+      for (const x of drops) {
+        const d = locales.get(x.local_id)!;
+        ofertas.push({ tipo: 'drop', texto: `${x.nombre} (${NOMBRE_PISO[x.piso]}, local ${x.numero_local}) tiene un Drop: ${x.producto} a ${dinero(x.precio_especial)}`, metros: d.metros, nodoId: d.nodo, lugar: x.nombre, localId: x.local_id, dropId: x.id, trafico: x.trafico });
       }
     }
     return ofertas.sort((a, b) => a.metros - b.metros);

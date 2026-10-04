@@ -13,7 +13,7 @@ export const NODO_ENTRADA = 'N1:entrada:norte';
 
 /**
  * Orientación en interiores. La posición del cliente sale de la prueba de presencia que ya existe
- * (QR de puerta, cartel de hito, entrada, compra o retiro): el nodo del grafo donde ocurrió.
+ * (QR de puerta de local, entrada, compra o retiro): el nodo del grafo donde ocurrió.
  */
 @Injectable()
 export class OrientacionService implements OnModuleInit, OnModuleDestroy {
@@ -30,7 +30,6 @@ export class OrientacionService implements OnModuleInit, OnModuleDestroy {
     this.bus.on('recinto.cambiado', (e) => this.reconstruir(e.recintoId).then(() => undefined));
     this.bus.on('checkin.registrado', (e) => this.moverA(e.clienteId, `local:${e.localId}`, 'checkin'));
     this.bus.on('compra.registrada', (e) => this.moverA(e.clienteId, `local:${e.localId}`, e.origen === 'paseoya' ? 'retiro' : 'compra'));
-    this.bus.on('hito.reclamado', (e) => this.moverA(e.clienteId, `hito:${e.hitoId}`, 'hito'));
     this.bus.on('visita.iniciada', async (e) => {
       const n = await one<{ id: string }>(this.db, `select id from nodo_ubicacion where tipo = 'entrada' and codigo_qr = $1`, [`PPE:${e.puerta ?? ''}`]);
       if (n) await this.moverA(e.clienteId, n.id, 'entrada');
@@ -55,19 +54,18 @@ export class OrientacionService implements OnModuleInit, OnModuleDestroy {
   async reconstruir(recintoId: string) {
     const zonas = await many(this.db, 'select * from zona where recinto_id = $1', [recintoId]);
     const locales = await many(this.db, 'select id, nombre, piso, numero_local, coord_x, coord_y, zona_id, codigo_puerta, activo from local where recinto_id = $1', [recintoId]);
-    const hitos = await many(this.db, 'select id, nombre, zona_id, codigo from hito where recinto_id = $1 and activo', [recintoId]);
     const servicios = await many(this.db, 'select id, nombre, piso, x, y, zona_id from servicio_paseo where recinto_id = $1 and activo', [recintoId]);
-    const { nodos, aristas } = construirGrafo({ zonas, locales, hitos, servicios } as any);
+    const { nodos, aristas } = construirGrafo({ zonas, locales, servicios } as any);
     await this.db.tx(async (q) => {
       const ids = nodos.map((n) => n.id);
       await q.query('delete from arista_ubicacion where desde in (select id from nodo_ubicacion where recinto_id = $1)', [recintoId]);
       await q.query('delete from nodo_ubicacion where recinto_id = $1 and not (id = any($2::text[]))', [recintoId, ids]);
       for (const n of nodos) {
         await q.query(
-          `insert into nodo_ubicacion (id, recinto_id, piso, tipo, nombre, x, y, zona_id, local_id, hito_id, codigo_qr, servicio_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          `insert into nodo_ubicacion (id, recinto_id, piso, tipo, nombre, x, y, zona_id, local_id, codigo_qr, servicio_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            on conflict (id) do update set piso = excluded.piso, tipo = excluded.tipo, nombre = excluded.nombre, x = excluded.x, y = excluded.y,
-             zona_id = excluded.zona_id, local_id = excluded.local_id, hito_id = excluded.hito_id, codigo_qr = excluded.codigo_qr, servicio_id = excluded.servicio_id`,
-          [n.id, recintoId, n.piso, n.tipo, n.nombre, n.x, n.y, n.zonaId ?? null, n.localId ?? null, n.hitoId ?? null, n.codigoQr ?? null, n.servicioId ?? null],
+             zona_id = excluded.zona_id, local_id = excluded.local_id, codigo_qr = excluded.codigo_qr, servicio_id = excluded.servicio_id`,
+          [n.id, recintoId, n.piso, n.tipo, n.nombre, n.x, n.y, n.zonaId ?? null, n.localId ?? null, n.codigoQr ?? null, n.servicioId ?? null],
         );
       }
       for (let i = 0; i < aristas.length; i += 400) {
@@ -91,7 +89,7 @@ export class OrientacionService implements OnModuleInit, OnModuleDestroy {
     const filas = await many<any>(q, 'select * from nodo_ubicacion where recinto_id = $1', [recintoId]);
     const aristas = await many<any>(q, 'select a.* from arista_ubicacion a join nodo_ubicacion n on n.id = a.desde where n.recinto_id = $1', [recintoId]);
     const nodos = new Map<string, Nodo>(
-      filas.map((f) => [f.id, { id: f.id, piso: f.piso, tipo: f.tipo, nombre: f.nombre, x: Number(f.x), y: Number(f.y), zonaId: f.zona_id, localId: f.local_id, hitoId: f.hito_id, codigoQr: f.codigo_qr, servicioId: f.servicio_id }]),
+      filas.map((f) => [f.id, { id: f.id, piso: f.piso, tipo: f.tipo, nombre: f.nombre, x: Number(f.x), y: Number(f.y), zonaId: f.zona_id, localId: f.local_id, codigoQr: f.codigo_qr, servicioId: f.servicio_id }]),
     );
     const ady = new Map<string, Arista[]>();
     for (const a of aristas) {
@@ -112,7 +110,7 @@ export class OrientacionService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** Posición por código QR escaneado (puerta, hito o entrada). */
+  /** Posición por código QR escaneado (puerta de un local o entrada del Paseo). */
   async moverPorCodigo(recintoId: string, clienteId: string, codigo: string) {
     const n = await one<{ id: string; nombre: string }>(this.db, 'select id, nombre from nodo_ubicacion where recinto_id = $1 and codigo_qr = $2', [recintoId, codigo.trim()]);
     if (!n) throw new NotFoundException('Ese código no corresponde a un punto del Paseo');

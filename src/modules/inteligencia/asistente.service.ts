@@ -8,13 +8,26 @@ import { EquidadService } from '../jarvis/equidad.service.js';
 import { type Entidades, MemoriaJarvis } from '../jarvis/memoria.service.js';
 import { InteligenciaService } from './inteligencia.service.js';
 
-const PERIODO_EXPLICITO = /(\bhoy\b|\bayer\b|semana|\bmes\b|ultim[oa]s? \d+ dias|30 dias)/;
+const DIAS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const PERIODO_EXPLICITO = new RegExp(`(\\bhoy\\b|\\bayer\\b|semana|\\bmes\\b|ultim[oa]s? \\d+ dias|30 dias|\\b20\\d\\d\\b|\\b(${DIAS.join('|')})\\b|\\b(${MESES.join('|')})\\b)`);
 
 type IntencionAdmin =
   | 'resumen' | 'ranking' | 'local' | 'comparar' | 'horas' | 'equidad' | 'acciones' | 'ofertas' | 'pendientes'
-  | 'clientes' | 'demanda' | 'fraude' | 'eventos' | 'drops' | 'promociones' | 'jarvis' | 'ayuda' | 'reinicio' | 'libre';
+  | 'clientes' | 'demanda' | 'fraude' | 'eventos' | 'drops' | 'promociones' | 'jarvis' | 'jarvis_sin_datos' | 'metrica'
+  | 'sin_datos' | 'fuera_de_tema' | 'ayuda' | 'reinicio' | 'libre';
 
-const CLASIFICABLES: IntencionAdmin[] = ['resumen', 'ranking', 'local', 'comparar', 'horas', 'equidad', 'acciones', 'ofertas', 'pendientes', 'clientes', 'demanda', 'fraude', 'eventos', 'drops', 'promociones', 'jarvis'];
+/**
+ * Lo que Paseo Points no mide: se dice tal cual y se ofrece lo más cercano que sí hay.
+ * Así el asistente no responde otra cosa ni inventa una cifra.
+ */
+const NO_MEDIMOS: { re: RegExp; tema: string; alternativa: string; sugerencia: string }[] = [
+  { re: /\b(nps|satisfaccion|encuesta|encuestas|calificacion|resenas|opiniones|quejas)\b/, tema: 'satisfacción ni NPS (no hay encuestas en Paseo Points)', alternativa: 'Lo más cercano que mido es la recompra y los clientes dormidos.', sugerencia: '¿Cuál es la tasa de recompra?' },
+  { re: /\b(empleados|personal|trabajadores|sueldos|salarios|planilla|turnos del personal)\b/, tema: 'empleados ni personal de los locales (solo existe la cuenta de comercio de cada local)', alternativa: 'Sí tengo las ventas, compras y clientes de cada local.', sugerencia: 'Ranking de locales de esta semana' },
+  { re: /\b(margen|margenes|utilidad|utilidades|ganancia|ganancias|costos?|rentabilidad|alquiler|alquileres|gastos)\b/, tema: 'costos, márgenes ni alquileres: solo se registran las ventas', alternativa: 'Te puedo dar las ventas y el ticket promedio por local o por período.', sugerencia: 'Resumen de este mes' },
+  { re: /\b(aforo|capacidad maxima|camaras|conteo de personas en puerta|sensores)\b/, tema: 'aforo ni conteo de personas por cámaras o sensores', alternativa: 'Lo que mido son visitas registradas (QR, geocerca, compras) y el flujo por local.', sugerencia: '¿Cuántas visitas hubo esta semana?' },
+  { re: /\b(competencia externa|otros centros comerciales|megacenter|mall del sur)\b/, tema: 'otros centros comerciales', alternativa: 'Solo tengo datos del Paseo Aranjuez.', sugerencia: 'Resumen de esta semana' },
+];
 
 interface Periodo {
   clave: string;
@@ -24,6 +37,12 @@ interface Periodo {
   /** período anterior del mismo largo, para comparar */
   antesDesde: string;
   antesHasta: string;
+}
+
+/** Rango de fechas con datos (para decir con honestidad «no hay datos de 2020»). */
+interface Cobertura {
+  desde: string;
+  hasta: string;
 }
 
 export interface Columna {
@@ -61,9 +80,10 @@ const bs = (n: number) => `Bs ${fmt(n)}`;
 const variacion = (a: number, b: number) => (b > 0 ? Math.round(((a - b) / b) * 1000) / 10 : null);
 const conSigno = (v: number | null) => (v === null ? 'sin referencia' : `${v >= 0 ? '+' : ''}${fmt(v, 1)} %`);
 /** «hoy», «ayer», «esta semana», «en los últimos 7 días»: para continuar una oración. */
-const cuando = (p: { clave: string; etiqueta: string }) => (/^(hoy|ayer|semana|semana_pasada|mes|mes_pasado)$/.test(p.clave) ? p.etiqueta : `en ${p.etiqueta}`);
+const cuando = (p: { clave: string; etiqueta: string }) => (/^(hoy|ayer|semana|semana_pasada|mes|mes_pasado)$/.test(p.clave) || /^f\d/.test(p.clave) ? p.etiqueta : `en ${p.etiqueta}`);
 const Cuando = (p: { clave: string; etiqueta: string }) => cuando(p).charAt(0).toUpperCase() + cuando(p).slice(1);
 const dias = (iso: string, n: number) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86400_000).toISOString().slice(0, 10);
+const fechaLarga = (iso: string) => `${Number(iso.slice(8, 10))} de ${MESES[Number(iso.slice(5, 7)) - 1]} de ${iso.slice(0, 4)}`;
 
 /**
  * Asistente del Centro de Inteligencia: conversa con administración y marketing sobre el Paseo con
@@ -95,27 +115,21 @@ export class AsistenteAdmin {
 
   async preguntar(s: Sesion, pregunta: string): Promise<RespuestaAdmin> {
     const t0 = Date.now();
-    const t = normalizar(pregunta);
+    // «Hola Jarvis, resumen de hoy»: el saludo y el nombre no son parte de la pregunta
+    const t = normalizar(pregunta).replace(/^((hola|oye|buenas|buenos dias|buenas tardes|buenas noches)\s+)?(jarvis|asistente)\s+/, '').trim() || normalizar(pregunta);
     const hilo = await this.memoria.hilo(s.sub, 8);
     const mem = this.memoria.contexto(hilo);
     const ent = await this.saber.encontrar(s.recintoId, t);
     const periodo = this.periodo(t, mem.periodo);
-    let intencion = this.detectar(t, ent.locales.length, mem);
-    if (intencion === 'libre') {
-      const j = await this.cerebro.json<{ intencion: IntencionAdmin }>(
-        `Clasifica la pregunta de un administrador de centro comercial. Responde solo JSON {"intencion":"..."} con una de: ${CLASIFICABLES.join(', ')}.
-resumen = ventas o visitas totales; ranking = mejores o peores locales; local = datos de un local; equidad = reparto del flujo de personas entre locales;
-acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; pendientes = lo que espera aprobación.`,
-        `${MemoriaJarvis.paraPrompt(hilo, 4)}\nAdmin: ${pregunta}`,
-      );
-      if (j && CLASIFICABLES.includes(j.intencion)) intencion = j.intencion;
-    }
-    const localId = ent.locales[0]?.id ?? (intencion === 'local' || intencion === 'horas' || /\b(ahi|ese|esa|el mismo)\b/.test(t) ? mem.localId : undefined);
+    const intencion = this.detectar(t, ent.locales.length, mem);
+    const localId = ent.locales[0]?.id ?? (['local', 'horas'].includes(intencion) || /\b(ahi|ese|esa|el mismo)\b/.test(t) ? mem.localId : undefined);
     const ctx = { s, t, pregunta, periodo, localId, local2: ent.locales[1]?.id ?? (intencion === 'comparar' ? mem.localId : undefined), categoria: ent.categoria };
 
     let b: Borrador;
     try {
-      b = await this.manejar(intencion, ctx);
+      // Un período sin datos («ventas de 2020») se dice antes de responder con ceros
+      const fuera = PERIODO_EXPLICITO.test(t) && !['sin_datos', 'fuera_de_tema', 'ayuda', 'reinicio', 'acciones', 'pendientes'].includes(intencion) ? await this.fueraDeCobertura(s.recintoId, periodo) : null;
+      b = fuera ?? (await this.manejar(intencion, ctx));
     } catch (e: any) {
       b = { texto: `No pude completar esa consulta (${e.message}). Prueba con «resumen de la semana», «equidad del flujo» o «qué debería hacer hoy».`, reescribir: false };
     }
@@ -141,24 +155,29 @@ acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; 
     const r = (re: RegExp) => re.test(t);
     if (r(/(nueva conversacion|empecemos de nuevo|olvida (todo|eso))/)) return 'reinicio';
     if (r(/^(ayuda|que puedes hacer|que sabes hacer|como funcionas)/)) return 'ayuda';
+    if (r(/\b(clima|que tiempo hace|va a llover|temperatura|pronostico|capital de|presidente|quien gano|el partido|noticias|chiste|receta de|horoscopo)/)) return 'fuera_de_tema';
+    if (NO_MEDIMOS.some((x) => x.re.test(t))) return 'sin_datos';
+    if (r(/(jarvis|asistente de los clientes|los clientes).*(no sabe|no supo|no pudo|no entiende|no entendio|sin respuesta|no tiene datos|no tuvo datos|sin datos)/) || r(/(no sabe|no supo|no pudo|no tuvo datos|sin datos|sin respuesta).*(jarvis|responder)/) || r(/(preguntas sin respuesta|que no sabe responder)/)) return 'jarvis_sin_datos';
     if (r(/(pendiente|por aprobar|que (tengo|hay) que (revisar|aprobar)|esperan aprobacion)/)) return 'pendientes';
     if (r(/(que (deberia|debo|podemos|puedo|conviene) hacer|recomiend|sugier|sugerencia|plan de accion|como (mejoro|mejoramos|equilibr|aumento|aumentamos|reparto)|ideas para|acciones)/)) return 'acciones';
     if (r(/(equidad|equitativ|gini|reparto|distribu|flujo de (personas|gente|clientes)|sub ?atendid|sobre ?atendid|desequilibr|concentra|menos (gente|trafico|visitas|clientes)|mas (gente|publico|clientes|trafico) de la que|saturad|mas vacio|vacios)/)) return 'equidad';
     if (r(/(ofertas? (personal|personales|de la ia|ia|diarias|del dia|generadas)|ofertas para cada|ofertas que genero)/)) return 'ofertas';
     if (conLocal >= 2 || r(/(compar|versus|\bvs\b|frente a|contra )/)) return 'comparar';
     if (r(/(hora pico|horas? (pico|flojas|muertas|tranquilas|de mas|de menos)|a que hora|que horario|franja)/)) return 'horas';
-    if (r(/(mejores|peores|top|ranking|que locales? (vende|venden|vendio|vendieron|crece|crecen|cae|caen)|mas vend|menos vend|cuales venden)/)) return 'ranking';
+    if (r(/(mejores|peores|top|ranking|que locales? (vende|venden|vendio|vendieron|crece|crecen|cae|caen)|mas vend|menos vend|cuales venden|locale?s? con (mas|menos|mayor|menor)|el que (mas|menos)|quien vendio (mas|menos)|mayor(es)? venta|menor(es)? venta)/)) return 'ranking';
     if (r(/(fraude|alerta|sospech|anomal)/)) return 'fraude';
     if (r(/(no encuentran|sin resultado|demanda|buscan|que tiendas faltan|que falta)/)) return 'demanda';
     if (r(/(jarvis|que preguntan|asistente de los clientes)/)) return 'jarvis';
-    if (r(/(cliente|segmento|retencion|dormid|nuevos registros|registr)/)) return 'clientes';
+    // Una métrica puntual: se responde esa cifra primero, no el resumen completo
+    if (r(/\b(ticket|recompra|vuelven|repiten|retencion|visitantes|visitas|afluencia|cuantas personas|puntos (emitidos|canjeados|entregados|ganados)|canjes)\b/)) return 'metrica';
+    if (r(/(cliente|segmento|dormid|nuevos registros|registr)/)) return 'clientes';
     if (r(/\bdrops?\b/)) return 'drops';
     if (r(/(evento|asistencia|concierto|feria|taller)/)) return 'eventos';
     if (r(/(promocion|promo|campana|roi|retorno)/)) return 'promociones';
     if (conLocal) return 'local';
-    if (r(/(resumen|como (vamos|va|estuvo|fue|estamos)|ventas|vendimos|vendio|ingres|factur|visitas|compras|ticket|cuanto)/)) return 'resumen';
+    if (r(/(resumen|como (vamos|va|estuvo|fue|estamos)|ventas|vendimos|vendio|ingres|factur|compras|cuanto (se )?(vend|ingres|factur|compr))/)) return 'resumen';
     // Seguimiento corto: «¿y ayer?», «¿y el mes pasado?» repite la última intención con otro período
-    if (t.split(' ').length <= 5 && /^(y|e)\b/.test(t) && mem.periodo) return 'resumen';
+    if (t.split(' ').length <= 5 && /^(y|e)\b/.test(t) && (mem.periodo || PERIODO_EXPLICITO.test(t))) return 'resumen';
     return 'libre';
   }
 
@@ -173,6 +192,24 @@ acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; 
     if (n) return crear(`d${n[1]}`, dias(hoy, -(Number(n[1]) - 1)), hoy, `los últimos ${n[1]} días`);
     if (/\bhoy\b/.test(t)) return crear('hoy', hoy, hoy, 'hoy');
     if (/\bayer\b/.test(t)) return crear('ayer', dias(hoy, -1), dias(hoy, -1), 'ayer');
+    // «el domingo», «el lunes pasado»: el último de ese día (hoy no cuenta si dice «pasado»)
+    const d = DIAS.findIndex((x) => new RegExp(`\\b${x}\\b`).test(t));
+    if (d >= 0) {
+      let atras = (dow - d + 7) % 7;
+      if (atras === 0 && /pasado/.test(t)) atras = 7;
+      const f = dias(hoy, -atras);
+      return crear(`f${f}`, f, f, atras === 0 ? 'hoy' : `el ${['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][d]} ${Number(f.slice(8))}`);
+    }
+    // «en agosto», «agosto de 2025», «2020»
+    const mes = MESES.findIndex((x) => new RegExp(`\\b${x}\\b`).test(t));
+    const anio = /\b(20\d\d)\b/.exec(t)?.[1];
+    if (mes >= 0) {
+      const a = anio ? Number(anio) : mes + 1 > Number(hoy.slice(5, 7)) ? Number(hoy.slice(0, 4)) - 1 : Number(hoy.slice(0, 4));
+      const desde = `${a}-${String(mes + 1).padStart(2, '0')}-01`;
+      const fin = dias(new Date(Date.UTC(a, mes + 1, 1)).toISOString().slice(0, 10), -1);
+      return crear(`m${desde.slice(0, 7)}`, desde, fin > hoy ? hoy : fin, `${MESES[mes]}${anio ? ` de ${anio}` : ''}`);
+    }
+    if (anio) return crear(`a${anio}`, `${anio}-01-01`, `${anio}-12-31` > hoy ? hoy : `${anio}-12-31`, anio);
     if (/semana pasada/.test(t)) {
       const lunes = dias(hoy, -((dow + 6) % 7) - 7);
       return crear('semana_pasada', lunes, dias(lunes, 6), 'la semana pasada');
@@ -186,7 +223,15 @@ acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; 
     }
     if (/(este mes|mes actual|en el mes)/.test(t)) return crear('mes', `${hoy.slice(0, 7)}-01`, hoy, 'este mes');
     if (/(ultimo mes|30 dias)/.test(t)) return crear('d30', dias(hoy, -29), hoy, 'los últimos 30 días');
-    if (anterior && !/(semana|mes|dia|hoy|ayer)/.test(t)) return this.periodo(anterior === 'semana' ? 'esta semana' : anterior === 'mes' ? 'este mes' : anterior === 'mes_pasado' ? 'mes pasado' : anterior === 'semana_pasada' ? 'semana pasada' : anterior.startsWith('d') ? `ultimos ${anterior.slice(1)} dias` : anterior);
+    // Un día, mes o año recordado de la conversación («¿y el ticket?» después de «el domingo»)
+    const recordado = anterior && !/(semana|mes|dia|hoy|ayer)/.test(t) ? /^([fma])(\d{4}(?:-\d\d)?(?:-\d\d)?)$/.exec(anterior) : null;
+    if (recordado) {
+      const [, tipo, v] = recordado;
+      if (tipo === 'f') return crear(anterior!, v, v, `el ${Number(v.slice(8))} de ${MESES[Number(v.slice(5, 7)) - 1]}`);
+      if (tipo === 'm') return this.periodo(`${MESES[Number(v.slice(5, 7)) - 1]} ${v.slice(0, 4)}`);
+      return this.periodo(v);
+    }
+    if (anterior && !/(semana|mes|dia|hoy|ayer)/.test(t) && !/^[fma]\d/.test(anterior)) return this.periodo(anterior === 'semana' ? 'esta semana' : anterior === 'mes' ? 'este mes' : anterior === 'mes_pasado' ? 'mes pasado' : anterior === 'semana_pasada' ? 'semana pasada' : anterior.startsWith('d') ? `ultimos ${anterior.slice(1)} dias` : anterior);
     return crear('d7', dias(hoy, -6), hoy, 'los últimos 7 días');
   }
 
@@ -211,6 +256,10 @@ acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; 
       case 'drops': return this.drops(r, c.periodo);
       case 'promociones': return this.promociones(r);
       case 'jarvis': return this.jarvis(r);
+      case 'jarvis_sin_datos': return this.jarvisSinDatos(r);
+      case 'metrica': return this.metrica(r, c.t, c.periodo, c.localId ?? null);
+      case 'sin_datos': return Promise.resolve(this.sinDatos(c.t));
+      case 'fuera_de_tema': return Promise.resolve({ texto: 'Eso no lo sé: solo tengo los datos del Paseo Aranjuez (ventas, visitas, locales, clientes, promociones, eventos, Drops, ofertas de la IA y Jarvis). ¿Te ayudo con algo de eso?', reescribir: false, sugerencias: this.ayuda().sugerencias });
       case 'reinicio': return this.memoria.reiniciar(c.s.sub).then(() => ({ texto: 'Listo, empezamos una conversación nueva.', reescribir: false }));
       case 'ayuda': return Promise.resolve(this.ayuda());
       default: return this.libre(c.s, c.pregunta);
@@ -259,10 +308,14 @@ acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; 
     const cae = mov[mov.length - 1];
     const v = variacion(a.ventas, b.ventas);
     const partes = [
-      `${p.etiqueta.charAt(0).toUpperCase() + p.etiqueta.slice(1)} el Paseo vendió ${bs(a.ventas)} en ${fmt(a.compras)} compras (${conSigno(v)} frente al período anterior), con ${fmt(a.clientes)} clientes distintos y un ticket promedio de ${bs(a.ticket)}.`,
+      `${Cuando(p)} el Paseo vendió ${bs(a.ventas)} en ${fmt(a.compras)} compras (${conSigno(v)} frente al período anterior), con ${fmt(a.clientes)} clientes distintos y un ticket promedio de ${bs(a.ticket)}.`,
       `Hubo ${fmt(a.visitas)} visitas registradas (${conSigno(variacion(a.visitas, b.visitas))}); se emitieron ${fmt(a.emitidos)} puntos y se canjearon ${fmt(a.canjeados)}.`,
     ];
-    if (sube && cae && sube !== cae) partes.push(`El que más creció fue ${sube.nombre} (${conSigno(variacion(sube.ahora, sube.antes))}) y el que más cayó, ${cae.nombre} (${conSigno(variacion(cae.ahora, cae.antes))}).`);
+    // Solo se nombra «el que más creció» si creció y «el que más cayó» si de verdad cayó
+    const vSube = sube ? variacion(sube.ahora, sube.antes) : null;
+    const vCae = cae ? variacion(cae.ahora, cae.antes) : null;
+    const frases = [vSube !== null && vSube > 0 ? `el que más creció fue ${sube.nombre} (${conSigno(vSube)})` : '', vCae !== null && vCae < 0 && cae !== sube ? `el que más cayó, ${cae.nombre} (${conSigno(vCae)})` : ''].filter(Boolean);
+    if (frases.length) partes.push(`${frases.join(' y ').replace(/^./, (x) => x.toUpperCase())}.`);
     return {
       texto: partes.join(' '),
       reescribir: false,
@@ -599,22 +652,110 @@ acciones = qué hacer o recomendaciones; ofertas = ofertas personales de la IA; 
       [recintoId],
     );
     const total = filas.reduce((a, f) => a + f.preguntas, 0);
-    const sinRespuesta = filas.filter((f) => ['libre', 'desconocida'].includes(f.intencion)).reduce((a, f) => a + f.preguntas, 0);
+    const sinRespuesta = filas.filter((f) => ['sin_datos', 'libre', 'desconocida'].includes(f.intencion)).reduce((a, f) => a + f.preguntas, 0);
     return {
       texto: total
-        ? `En 7 días los clientes le hicieron ${fmt(total)} preguntas a Jarvis; lo más consultado es ${filas.slice(0, 3).map((f) => `${f.intencion.replace('_', ' ')} (${f.preguntas})`).join(', ')}. ${fmt((100 * sinRespuesta) / total, 1)} % fueron preguntas abiertas respondidas con los datos generales del Paseo.`
+        ? `En 7 días los clientes le hicieron ${fmt(total)} preguntas a Jarvis; lo más consultado es ${filas.slice(0, 3).map((f) => `${f.intencion.replace(/_/g, ' ')} (${f.preguntas})`).join(', ')}. En ${fmt((100 * sinRespuesta) / total, 1)} % no había datos para responder y Jarvis lo dijo así, sin inventar.`
         : 'Jarvis todavía no recibió preguntas esta semana.',
       reescribir: false,
       tabla: filas.length ? { columnas: [{ clave: 'intencion', titulo: 'Tema' }, { clave: 'preguntas', titulo: 'Preguntas', tipo: 'entero' }], filas } : undefined,
       grafico: filas.length ? { tipo: 'barra', x: 'intencion', y: 'preguntas' } : undefined,
-      acciones: [{ tipo: 'ir', etiqueta: 'Abrir Jarvis y grafo', ruta: '/admin/jarvis' }],
+      acciones: [{ tipo: 'ir', etiqueta: 'Abrir Jarvis y grafo', ruta: '/admin/jarvis' }, { tipo: 'ir', etiqueta: 'Información para Jarvis', ruta: '/admin/informacion' }],
+      sugerencias: ['¿Qué preguntas no supo responder Jarvis?'],
     };
   }
 
-  /** Lo que no encaja: «Pregúntale a tus datos» sobre las vistas oro (plantillas o Claude si está configurado). */
+  // ------------------------------------------------------------------ honestidad: lo que no hay
+
+  /** Rango con datos de ventas; si el período pedido cae fuera, se dice y no se responde con ceros. */
+  private async fueraDeCobertura(recintoId: string, p: Periodo): Promise<Borrador | null> {
+    const c = await one<Cobertura>(this.db, `select min(bo(creado_en))::date::text as desde, max(bo(creado_en))::date::text as hasta from transaccion where recinto_id = $1`, [recintoId]);
+    if (!c?.desde) return { texto: 'Todavía no hay ventas registradas en Paseo Points.', reescribir: false };
+    if (p.hasta >= c.desde) return null;
+    return {
+      texto: `No tengo datos de ${p.etiqueta}: los registros de Paseo Points empiezan el ${fechaLarga(c.desde)}. Puedo darte cualquier período desde esa fecha.`,
+      reescribir: false,
+      sugerencias: ['Resumen de este mes', 'Resumen de los últimos 30 días'],
+    };
+  }
+
+  private sinDatos(t: string): Borrador {
+    const x = NO_MEDIMOS.find((n) => n.re.test(t))!;
+    return { texto: `No tengo datos de ${x.tema}. ${x.alternativa}`, reescribir: false, sugerencias: [x.sugerencia, '¿Qué puedes hacer?'] };
+  }
+
+  /** Lo que los clientes le preguntaron a Jarvis y no tenía datos para responder (para cargarlo o atraerlo). */
+  private async jarvisSinDatos(recintoId: string): Promise<Borrador> {
+    const filas = await many<any>(
+      this.db,
+      `select coalesce(c.datos->>'tema', lower(c.texto)) as tema, count(*)::int as veces, max(c.creado_en) as ultima
+       from conversacion_jarvis c join usuario u on u.id = c.cliente_id
+       where u.recinto_id = $1 and u.rol = 'cliente' and c.rol = 'jarvis' and c.intencion = 'sin_datos' and c.creado_en > now() - interval '30 days'
+       group by 1 order by 2 desc, 3 desc limit 15`,
+      [recintoId],
+    );
+    if (!filas.length) return { texto: 'En los últimos 30 días Jarvis tuvo datos para todo lo que le preguntaron.', reescribir: false };
+    const total = filas.reduce((a, f) => a + f.veces, 0);
+    return {
+      texto: `En 30 días Jarvis no tuvo datos para ${fmt(total)} ${total === 1 ? 'pregunta' : 'preguntas'}; lo más pedido: ${filas.slice(0, 4).map((f) => `«${f.tema}» (${f.veces})`).join(', ')}. Puedes cargar la respuesta en «Información para Jarvis» o tomarlo como señal de qué falta en el Paseo.`,
+      reescribir: false,
+      tabla: { columnas: [{ clave: 'tema', titulo: 'Lo que preguntaron' }, { clave: 'veces', titulo: 'Veces', tipo: 'entero' }], filas: filas.map(({ tema, veces }) => ({ tema, veces })) },
+      grafico: { tipo: 'barra', x: 'tema', y: 'veces' },
+      acciones: [{ tipo: 'ir', etiqueta: 'Abrir Información para Jarvis', ruta: '/admin/informacion' }],
+    };
+  }
+
+  /** Una cifra puntual: ticket promedio, visitas, recompra o puntos, con su variación. */
+  private async metrica(recintoId: string, t: string, p: Periodo, localId: string | null): Promise<Borrador> {
+    const nombre = localId ? (await one<{ nombre: string }>(this.db, 'select nombre from local where id = $1', [localId]))?.nombre : null;
+    const en = nombre ? ` en ${nombre}` : '';
+    if (/\b(recompra|vuelven|repiten|retencion)\b/.test(t)) {
+      // La recompra en un solo día no dice nada: se mide al menos en 30 días
+      const largo = Math.round((Date.parse(p.hasta) - Date.parse(p.desde)) / 86400_000) + 1;
+      if (largo < 7) p = { ...p, clave: 'd30', desde: dias(p.hasta, -29), etiqueta: 'los últimos 30 días' };
+      const r = await one<any>(
+        this.db,
+        `with c as (select cliente_id, count(distinct bo(creado_en)::date) as dias from transaccion
+                    where recinto_id = $1 and estado = 'valida' and bo(creado_en)::date between $2::date and $3::date and ($4::uuid is null or local_id = $4) group by 1)
+         select count(*)::int as clientes, count(*) filter (where dias >= 2)::int as repiten from c`,
+        [recintoId, p.desde, p.hasta, localId],
+      );
+      const tasa = r.clientes ? (100 * r.repiten) / r.clientes : 0;
+      return {
+        texto: r.clientes
+          ? `${Cuando(p)}${en}, ${fmt(r.repiten)} de ${fmt(r.clientes)} clientes compraron en más de un día: una recompra de ${fmt(tasa, 1)} %.`
+          : `${Cuando(p)}${en} no hubo compras, así que no hay recompra que medir.`,
+        reescribir: false,
+        sugerencias: ['¿Cuántos clientes dormidos hay?', '¿Qué debería hacer hoy?'],
+      };
+    }
+    const a = await this.metricas(recintoId, p.desde, p.hasta, localId);
+    const b = await this.metricas(recintoId, p.antesDesde, p.antesHasta, localId);
+    if (/\bticket\b/.test(t)) {
+      return { texto: `El ticket promedio${en} ${cuando(p)} fue de ${bs(a.ticket)} (${conSigno(variacion(a.ticket, b.ticket))} frente al período anterior), en ${fmt(a.compras)} compras.`, reescribir: false, sugerencias: ['¿Qué locales vendieron más?', 'Resumen de esta semana'] };
+    }
+    if (/\b(puntos|canjes)\b/.test(t)) {
+      return { texto: `${Cuando(p)}${en} se emitieron ${fmt(a.emitidos)} puntos (${conSigno(variacion(a.emitidos, b.emitidos))}) y se canjearon ${fmt(a.canjeados)} (${conSigno(variacion(a.canjeados, b.canjeados))}).`, reescribir: false };
+    }
+    if (localId) {
+      return { texto: `${Cuando(p)}, ${nombre} tuvo ${fmt(a.clientes)} clientes distintos en ${fmt(a.compras)} compras (${conSigno(variacion(a.compras, b.compras))}). Las visitas al Paseo no se registran por local; lo más cercano son sus clientes.`, reescribir: false };
+    }
+    return {
+      texto: `${Cuando(p)} hubo ${fmt(a.visitas)} visitas registradas al Paseo (${conSigno(variacion(a.visitas, b.visitas))} frente al período anterior) y ${fmt(a.clientes)} clientes compraron. Las visitas se registran con el QR de la puerta, la geocerca o una compra; no hay conteo de personas en las puertas.`,
+      reescribir: false,
+      sugerencias: ['¿A qué hora viene más gente?', 'Resumen de esta semana'],
+    };
+  }
+
+  /** Lo que no encaja: «Pregúntale a tus datos» sobre las vistas oro; si no hay forma de responder, se dice. */
   private async libre(s: Sesion, pregunta: string): Promise<Borrador> {
     const r: any = await this.inteligencia.preguntar(s.recintoId, s.sub, pregunta);
-    if (!r.sql) return { ...this.ayuda(), texto: `No entendí esa pregunta todavía. ${this.ayuda().texto}` };
+    if (!r.sql) {
+      return {
+        ...this.ayuda(),
+        texto: `No tengo una forma de responder «${pregunta.trim().replace(/[¿?]/g, '')}» con los datos de Paseo Points, y no voy a adivinar. ${this.ayuda().texto}`,
+      };
+    }
     const columnas = r.filas[0] ? Object.keys(r.filas[0]).map((k) => ({ clave: k, titulo: k.replace(/_/g, ' ') })) : [];
     return { texto: r.respuesta, reescribir: false, tabla: r.filas.length ? { columnas, filas: r.filas.slice(0, 50) } : undefined, grafico: r.grafico?.tipo === 'barra' || r.grafico?.tipo === 'linea' ? r.grafico : undefined };
   }

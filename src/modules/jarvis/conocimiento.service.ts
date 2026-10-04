@@ -2,20 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { Db, many, one } from '../../infra/db/db.js';
 import { ahoraBolivia, enRangoHorario } from '../../common/util.js';
 import { EventBus } from '../nucleo/event-bus.js';
+import { type Evidencia, type Indice, evidencia, normalizar, raicesDe, singular } from './buscador.js';
 
-/** Sin tildes, minúsculas, sin signos: así se compara lo que dice el reconocedor de voz. */
-export function normalizar(s: string) {
-  return s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9ñ\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** Singular aproximado: «salteñas» → «salteña», «audifonos» → «audifono». */
-export const singular = (w: string) => (w.length > 4 && /es$/.test(w) && !/(ces|ses)$/.test(w) ? w.slice(0, -2) : w.length > 3 && /s$/.test(w) ? w.slice(0, -1) : w);
+export { normalizar, singular } from './buscador.js';
 
 export function levenshtein(a: string, b: string) {
   if (a === b) return 0;
@@ -51,18 +40,22 @@ export interface Encontrado {
   servicio: ServicioIdx | null;
   actividad: ActividadIdx | null;
   categoria: string | null;
+  /** qué datos respaldan la pregunta y qué palabras quedaron sin respaldo */
+  ev: Evidencia;
+  /** el local se reconoció por su rubro («farmacia»), no por su nombre */
+  localPorRubro: boolean;
 }
 
 /** Sinónimos de categoría que usa la gente al hablar. */
 const CATEGORIAS: Record<string, string[]> = {
-  Comida: ['comida', 'comer', 'hambre', 'almorzar', 'almuerzo', 'cenar', 'cena', 'restaurante', 'desayuno', 'desayunar', 'merienda', 'patio de comidas'],
-  Tecnología: ['tecnologia', 'electronica', 'computacion', 'celulares', 'gadgets'],
-  Moda: ['ropa', 'moda', 'vestir', 'zapatos', 'calzado', 'zapatillas'],
+  Comida: ['comida', 'comer', 'hambre', 'almorzar', 'almuerzo', 'cenar', 'cena', 'restaurante', 'restaurantes', 'desayuno', 'desayunar', 'merienda', 'patio de comidas'],
+  Tecnología: ['tecnologia', 'electronica', 'computacion', 'gadgets'],
+  Moda: ['ropa', 'moda', 'vestir', 'zapatos', 'calzado'],
   Accesorios: ['accesorios', 'joyas', 'maquillaje', 'perfumes', 'cosmeticos'],
   Servicios: ['servicios'],
   Regalos: ['regalo', 'regalos', 'obsequio', 'detalle', 'cumpleanos'],
-  Hogar: ['hogar', 'decoracion', 'muebles', 'cocina'],
-  Entretenimiento: ['entretenimiento', 'diversion', 'divertirme', 'jugar', 'juegos', 'peliculas', 'pelicula'],
+  Hogar: ['hogar', 'decoracion', 'muebles'],
+  Entretenimiento: ['entretenimiento', 'diversion', 'divertirme', 'jugar'],
 };
 
 /**
@@ -73,7 +66,7 @@ const CATEGORIAS: Record<string, string[]> = {
  */
 @Injectable()
 export class ConocimientoPaseo {
-  private indice = new Map<string, { locales: LocalIdx[]; productos: ProductoIdx[]; servicios: ServicioIdx[]; actividades: ActividadIdx[]; en: number }>();
+  private indice = new Map<string, { locales: LocalIdx[]; productos: ProductoIdx[]; servicios: ServicioIdx[]; actividades: ActividadIdx[]; fuentes: Indice; en: number }>();
 
   constructor(
     private readonly db: Db,
@@ -89,7 +82,7 @@ export class ConocimientoPaseo {
     if (c && Date.now() - c.en < 30_000) return c;
     const filas = await many<any>(
       this.db,
-      `select l.id, l.nombre, l.piso, l.numero_local, l.palabras_clave, c.nombre as categoria from local l join categoria c on c.id = l.categoria_id where l.recinto_id = $1 and l.activo`,
+      `select l.id, l.nombre, l.piso, l.numero_local, l.palabras_clave, l.descripcion, c.nombre as categoria from local l join categoria c on c.id = l.categoria_id where l.recinto_id = $1 and l.activo`,
       [recintoId],
     );
     const cuenta = new Map<string, number>();
@@ -102,7 +95,7 @@ export class ConocimientoPaseo {
     }));
     const prods = await many<any>(
       this.db,
-      `select p.id, p.nombre, p.local_id, l.nombre as local, p.precio_bs from producto p join local l on l.id = p.local_id where l.recinto_id = $1 and p.activo and l.activo`,
+      `select p.id, p.nombre, p.descripcion, p.etiquetas, p.local_id, l.nombre as local, p.precio_bs from producto p join local l on l.id = p.local_id where l.recinto_id = $1 and p.activo and l.activo`,
       [recintoId],
     );
     const productos: ProductoIdx[] = prods.map((p) => ({
@@ -115,7 +108,23 @@ export class ConocimientoPaseo {
     const actividades: ActividadIdx[] = (
       await many<any>(this.db, `select id, titulo from actividad where recinto_id = $1 and estado = 'aprobada' and fin > now()`, [recintoId])
     ).map((a) => ({ id: a.id, titulo: a.titulo, tokens: normalizar(a.titulo).split(' ').filter((w) => w.length >= 4 && !VACIAS.has(w)).map(singular) }));
-    const r = { locales, productos, servicios, actividades, en: Date.now() };
+    const zonas = await many<any>(this.db, `select id, nombre, piso from zona where recinto_id = $1 and nombre not like 'Sector %'`, [recintoId]);
+    const info = await many<any>(this.db, 'select id, tema, respuesta, palabras_clave from info_paseo where recinto_id = $1 and activo', [recintoId]).catch(() => []);
+    // Índice de evidencia: con qué datos se puede respaldar cada palabra de una pregunta
+    const fuentes: Indice = {
+      locales: filas.map((f) => ({
+        id: f.id, nombre: f.nombre, categoria: f.categoria, raicesNombre: raicesDe(f.nombre),
+        raicesRubro: [...new Set<string>((f.palabras_clave ?? []).flatMap((k: string) => raicesDe(k)))], claves: (f.palabras_clave ?? []).map(normalizar),
+      })),
+      productos: prods.map((p) => ({
+        id: p.id, nombre: p.nombre, local_id: p.local_id, local: p.local, precio: Number(p.precio_bs),
+        raicesNombre: raicesDe(p.nombre), raicesExtra: [...new Set([...raicesDe(p.descripcion ?? ''), ...(p.etiquetas ?? []).flatMap((e: string) => raicesDe(e))])],
+      })),
+      servicios: servicios.map((s) => ({ ...s, raices: [...new Set([...s.claves.flatMap((k) => raicesDe(k)), ...raicesDe(s.nombre)])] })),
+      zonas: zonas.map((z) => ({ id: z.id, nombre: z.nombre, piso: z.piso, raices: raicesDe(z.nombre) })),
+      info: info.map((i) => ({ id: i.id, tema: i.tema, respuesta: i.respuesta, claves: (i.palabras_clave ?? []).map(normalizar), raices: [...new Set<string>((i.palabras_clave ?? []).flatMap((k: string) => raicesDe(k)))] })),
+    };
+    const r = { locales, productos, servicios, actividades, fuentes, en: Date.now() };
     this.indice.set(recintoId, r);
     return r;
   }
@@ -155,12 +164,19 @@ export class ConocimientoPaseo {
       const ws = k.split(" ").filter((w) => w.length >= 3);
       return ` ${t} `.includes(` ${k} `) || (ws.length > 1 && ws.every((w) => parecida(singular(w))));
     };
-    const servicio = idx.servicios.find((s) => s.claves.some(contiene)) ?? null;
+    const ev = evidencia(idx.fuentes, frase);
+    // Si nombró un servicio puntual («el cajero del Banco Unión»), ese; si no, el primero que coincida
+    const servicio = (ev.servicios[0] && idx.servicios.find((s) => s.id === ev.servicios[0].id)) ?? idx.servicios.find((s) => s.claves.some(contiene)) ?? null;
+    // Un evento se reconoce por su título, no por una sola palabra suelta («cine» no es «Función de cine familiar»)
     const actividad =
-      idx.actividades.map((a) => ({ a, s: a.tokens.filter(parecida).length / Math.max(1, a.tokens.length) })).filter((x) => x.s >= 0.5).sort((a, b) => b.s - a.s)[0]?.a ?? null;
+      idx.actividades
+        .map((a) => ({ a, n: a.tokens.filter(parecida).length }))
+        .filter((x) => x.n >= Math.min(2, x.a.tokens.length) && x.n / Math.max(1, x.a.tokens.length) >= 0.5)
+        .sort((a, b) => b.n - a.n)[0]?.a ?? null;
     const categoria = Object.entries(CATEGORIAS).find(([, sin]) => sin.some((k) => ` ${t} `.includes(` ${k} `)))?.[0] ?? null;
 
     // «la farmacia», «la óptica», «el cine»: el rubro identifica al local cuando hay uno solo
+    const porNombre = locales.length > 0;
     if (!locales.length && !productos.length) {
       for (const w of sing.filter((x) => x.length >= 4)) {
         const ls = idx.locales.filter((l) => l.claves.some((k) => singular(k) === w));
@@ -170,7 +186,74 @@ export class ConocimientoPaseo {
         }
       }
     }
-    return { locales, productos: productos.filter((x) => x.s === mejor).map((x) => x.p).slice(0, 8), servicio, actividad, categoria };
+    return { locales, productos: productos.filter((x) => x.s === mejor).map((x) => x.p).slice(0, 8), servicio, actividad, categoria, ev, localPorRubro: !porNombre && locales.length > 0 };
+  }
+
+  /** Olvida el índice: la próxima pregunta lo vuelve a leer (después de editar la información del Paseo). */
+  olvidar(recintoId: string) {
+    this.indice.delete(recintoId);
+  }
+
+  /** Evidencia de una frase cualquiera (para preguntas que no nombran nada conocido). */
+  async evidencia(recintoId: string, frase: string): Promise<Evidencia> {
+    return evidencia((await this.cargar(recintoId)).fuentes, frase);
+  }
+
+  /** Locales de una categoría, abiertos primero. */
+  async localesDeCategoria(recintoId: string, categoria: string) {
+    const { dia, hhmm } = ahoraBolivia();
+    const ls = await many<any>(
+      this.db,
+      `select l.id, l.nombre, l.piso, l.numero_local, l.descripcion, l.horario_apertura::text as apertura, l.horario_cierre::text as cierre, l.dias_atencion
+       from local l join categoria c on c.id = l.categoria_id where l.recinto_id = $1 and l.activo and c.nombre = $2 order by l.piso, l.numero_local`,
+      [recintoId, categoria],
+    );
+    return ls.map((l) => ({ ...l, abierto: (l.dias_atencion ?? [0, 1, 2, 3, 4, 5, 6]).includes(dia) && enRangoHorario(hhmm, l.apertura.slice(0, 5), l.cierre.slice(0, 5)) }));
+  }
+
+  /** Los productos más económicos (de una categoría de local, si se indica), con stock. */
+  masBaratos(recintoId: string, categoria: string | null, n = 3) {
+    return many<any>(
+      this.db,
+      `select p.id, p.nombre, p.precio_bs, l.id as local_id, l.nombre as local, l.piso, l.numero_local from producto p join local l on l.id = p.local_id join categoria c on c.id = l.categoria_id
+       where l.recinto_id = $1 and p.activo and l.activo and coalesce(p.stock, 1) > 0 and ($2::text is null or c.nombre = $2)
+       order by p.precio_bs, p.nombre limit $3`,
+      [recintoId, categoria, n * 4],
+    ).then((ps) => {
+      // Uno por local para que la recomendación no sea siempre el mismo
+      const vistos = new Set<string>();
+      return ps.filter((p) => (vistos.has(p.local_id) ? false : (vistos.add(p.local_id), true))).slice(0, n);
+    });
+  }
+
+  /** Datos de varios locales a la vez (para listas). */
+  localesPorId(ids: string[]) {
+    return many<any>(this.db, `select l.id, l.nombre, l.piso, l.numero_local, l.descripcion, c.nombre as categoria from local l join categoria c on c.id = l.categoria_id where l.id = any($1::uuid[]) order by l.piso, l.numero_local`, [ids]);
+  }
+
+  /** Cuántos locales hay, por categoría. */
+  conteo(recintoId: string) {
+    return many<{ categoria: string; ambito: string; n: number }>(
+      this.db,
+      `select c.nombre as categoria, c.ambito, count(*)::int as n from local l join categoria c on c.id = l.categoria_id where l.recinto_id = $1 and l.activo group by 1, 2 order by 3 desc`,
+      [recintoId],
+    );
+  }
+
+  /** Días y horarios: qué locales no atienden un día de la semana. */
+  cerradosElDia(recintoId: string, dia: number) {
+    return many<{ nombre: string }>(this.db, `select nombre from local where recinto_id = $1 and activo and not ($2 = any(coalesce(dias_atencion, '{0,1,2,3,4,5,6}'::int[]))) order by nombre`, [recintoId, dia]);
+  }
+
+  /** Para el reporte de la administración: lo que se buscó y no había. */
+  async registrarSinResultado(recintoId: string, clienteId: string | null, termino: string) {
+    if (!termino.trim()) return;
+    await this.db
+      .query(
+        `insert into busqueda (recinto_id, id_seudonimo, termino, origen, resultados) values ($1, (select id_seudonimo from cliente_perfil where usuario_id = $2), $3, 'jarvis', 0)`,
+        [recintoId, clienteId, termino.slice(0, 120)],
+      )
+      .catch(() => undefined);
   }
 
   /** Locales cuyo rubro o palabras clave coinciden con un término («farmacia», «pizza»). */
@@ -258,10 +341,9 @@ export class ConocimientoPaseo {
   dropsActivos(recintoId: string) {
     return many<any>(
       this.db,
-      `select d.id, d.precio_especial, d.mensaje, d.fin, z.nombre as zona, z.piso, p.id as producto_id, p.nombre as producto, p.precio_bs, l.nombre as local, h.id as hito_id, h.codigo,
+      `select d.id, d.precio_especial, d.mensaje, d.fin, l.piso, l.numero_local, p.id as producto_id, p.nombre as producto, p.precio_bs, l.id as local_id, l.nombre as local,
               d.max_reclamos - (select count(*)::int from reclamo_drop r where r.drop_id = d.id) as quedan
-       from drop_espacial d join zona z on z.id = d.zona_id join producto p on p.id = d.producto_id join local l on l.id = p.local_id
-       left join hito h on h.zona_id = d.zona_id and h.activo
+       from drop_espacial d join producto p on p.id = d.producto_id join local l on l.id = coalesce(d.local_id, p.local_id)
        where d.recinto_id = $1 and now() between d.inicio and d.fin order by d.fin`,
       [recintoId],
     );
@@ -272,16 +354,6 @@ export class ConocimientoPaseo {
     return many<any>(this.db, 'select * from servicio_paseo where recinto_id = $1 and tipo = $2 and activo', [recintoId, tipo]);
   }
 
-  /** Monedas de hoy que el cliente aún no recogió. */
-  monedasPendientes(recintoId: string, clienteId: string) {
-    const { fecha } = ahoraBolivia();
-    return many<any>(
-      this.db,
-      `select h.id, h.codigo, h.puntos, z.nombre as zona, z.piso from hito h join zona z on z.id = h.zona_id
-       where h.recinto_id = $1 and h.activo and not exists (select 1 from reclamo_hito r where r.hito_id = h.id and r.cliente_id = $2 and r.fecha = $3::date)`,
-      [recintoId, clienteId, fecha],
-    );
-  }
 
   /** Pedidos PaseoYa abiertos del cliente, con lo que lleva cada uno. */
   pedidosAbiertos(clienteId: string) {

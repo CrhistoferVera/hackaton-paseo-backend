@@ -8,13 +8,14 @@ import type { Ruta } from '../orientacion/domain/grafo.js';
 import { CerebroJarvis } from './cerebro.js';
 import { ContextoService, type Oferta } from './contexto.service.js';
 import { MemoriaJarvis } from './memoria.service.js';
-import { de, dinero } from './voz.js';
+import { dinero } from './voz.js';
 
 const INTERVALO_PROACTIVO_MS = Number(process.env.JARVIS_INTERVALO_S ?? 45) * 1000;
 // Radio caminando por el grafo: cada puerta queda a ~21 m del pasillo central, así que 60 m alcanza los locales vecinos
 const RADIO_CONTEXTO_M = Number(process.env.JARVIS_RADIO_M ?? 60);
 const DESVIO_MAXIMO_M = 50;
-const PRIORIDAD: Record<Oferta['tipo'], number> = { pedido_listo: 0, drop: 1, promocion: 2, mision: 3, moneda: 4 };
+const PRIORIDAD: Record<Oferta['tipo'], number> = { pedido_listo: 0, drop: 1, promocion: 2, mision: 3 };
+const VER_DROPS = { etiqueta: 'Ver Drop', ruta: '/drops' };
 
 export type Disparador = 'ruta_recojo' | 'espera_comida' | 'pedido_listo' | 'venta_cruzada' | 'bienvenida' | 'drop_cercano';
 
@@ -25,7 +26,6 @@ export interface OrdenVoz {
   motor: string;
   latenciaMs: number;
   ruta?: ReturnType<typeof OrientacionService.paraApp>;
-  ar?: { tipo: 'drop' | 'moneda'; codigo: string; lugar: string };
   acciones?: { etiqueta: string; ruta: string }[];
 }
 
@@ -65,9 +65,8 @@ export class OrquestadorJarvis implements OnModuleInit {
       })(),
     );
     this.bus.on('checkin.registrado', (e) => seguro(() => this.ventaCruzada(e.recintoId, e.clienteId, `local:${e.localId}`, false))());
-    this.bus.on('hito.reclamado', (e) => seguro(() => this.ventaCruzada(e.recintoId, e.clienteId, `hito:${e.hitoId}`, false))());
     this.bus.on('visita.iniciada', (e) => seguro(() => this.bienvenida(e.recintoId, e.clienteId, e.puerta ?? null))());
-    this.bus.on('drop.lanzado', (e) => seguro(() => this.avisarDrop(e.recintoId, e.dropId, e.hitoCodigo))());
+    this.bus.on('drop.lanzado', (e) => seguro(() => this.avisarDrop(e.recintoId, e.dropId, e.localId))());
   }
 
   private perfil(clienteId: string) {
@@ -85,7 +84,7 @@ export class OrquestadorJarvis implements OnModuleInit {
     borrador: string,
     contexto: string[],
     claves: string[],
-    extras: Partial<Pick<OrdenVoz, 'ar' | 'acciones'>> & { ruta?: Ruta | null } = {},
+    extras: Partial<Pick<OrdenVoz, 'acciones'>> & { ruta?: Ruta | null } = {},
     proactivo = false,
     silencioso = false,
   ): Promise<OrdenVoz | null> {
@@ -98,7 +97,7 @@ export class OrquestadorJarvis implements OnModuleInit {
     const fila = await one<{ id: string }>(
       this.db,
       `insert into orden_jarvis (recinto_id, cliente_id, disparador, texto, contexto, motor, latencia_ms, datos) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
-      [recintoId, clienteId, disparador, r.texto, [borrador, ...contexto].join(' | '), r.motor, r.latenciaMs, JSON.stringify({ ar: extras.ar ?? null, metros: extras.ruta?.metros ?? null })],
+      [recintoId, clienteId, disparador, r.texto, [borrador, ...contexto].join(' | '), r.motor, r.latenciaMs, JSON.stringify({ metros: extras.ruta?.metros ?? null })],
     );
     const orden: OrdenVoz = {
       id: fila!.id,
@@ -107,7 +106,6 @@ export class OrquestadorJarvis implements OnModuleInit {
       motor: r.motor,
       latenciaMs: r.latenciaMs,
       ruta: extras.ruta ? OrientacionService.paraApp(extras.ruta) : undefined,
-      ar: extras.ar,
       acciones: extras.acciones,
     };
     if (!silencioso) {
@@ -130,9 +128,9 @@ export class OrquestadorJarvis implements OnModuleInit {
     );
   }
 
-  /** Busca un desvío corto (máximo 50 m extra) por un cartel con Drop o moneda, priorizando pasillos con poco tráfico. */
+  /** Busca un desvío corto (máximo 50 m extra) por un local con Drop, priorizando pasillos con poco tráfico. */
   private async desvio(recintoId: string, clienteId: string, origen: string, destino: string) {
-    const candidatos = (await this.contexto.cercanos(recintoId, clienteId, origen, 400)).filter((o) => o.tipo === 'drop' || o.tipo === 'moneda');
+    const candidatos = (await this.contexto.cercanos(recintoId, clienteId, origen, 400)).filter((o) => o.tipo === 'drop' && o.nodoId !== destino);
     if (!candidatos.length) return null;
     const { g } = await this.orientacion.distancias(recintoId, origen, 0);
     const desdeDestino = alcanzables(g.ady, destino, 400);
@@ -141,7 +139,7 @@ export class OrquestadorJarvis implements OnModuleInit {
     const viables = candidatos
       .map((c) => ({ ...c, extra: c.metros + (desdeDestino.get(c.nodoId) ?? Infinity) - directo }))
       .filter((c) => c.extra <= DESVIO_MAXIMO_M)
-      .sort((a, b) => (a.tipo === b.tipo ? (a.trafico ?? 0) - (b.trafico ?? 0) || a.extra - b.extra : a.tipo === 'drop' ? -1 : 1));
+      .sort((a, b) => (a.trafico ?? 0) - (b.trafico ?? 0) || a.extra - b.extra);
     return viables[0] ?? null;
   }
 
@@ -167,12 +165,10 @@ export class OrquestadorJarvis implements OnModuleInit {
     let borrador = presente
       ? `Tu pedido de ${l.nombre}${otros} se retira en ${NOMBRE_PISO[l.piso]}, local ${l.numero_local}${distancia}.`
       : `Cuando llegues al Paseo, tu pedido de ${l.nombre}${otros} se retira en ${NOMBRE_PISO[l.piso]}, local ${l.numero_local}, desde las ${hora}.`;
-    if (via?.tipo === 'drop') borrador += ` Pasa por ${via.lugar}: ${via.texto.replace(/^en el cartel [^:]+: /, 'hay un Drop con ')}.`;
-    else if (via?.tipo === 'moneda') borrador += ` De paso, en el cartel ${de(via.lugar)} hay una moneda de ${via.puntos} puntos.`;
+    if (via) borrador += ` De paso, ${via.texto}.`;
     return this.emitir(recintoId, clienteId, 'ruta_recojo', borrador, via ? [via.texto] : [], [l.nombre, l.numero_local], {
       ruta,
-      ar: via?.hitoCodigo ? { tipo: via.tipo as 'drop' | 'moneda', codigo: via.hitoCodigo, lugar: via.lugar } : undefined,
-      acciones: [{ etiqueta: 'Ver pedido', ruta: `/pedido/${pedidoId}` }],
+      acciones: [{ etiqueta: 'Ver pedido', ruta: `/pedido/${pedidoId}` }, ...(via ? [VER_DROPS] : [])],
     });
   }
 
@@ -197,19 +193,16 @@ export class OrquestadorJarvis implements OnModuleInit {
       const presupuestoIda = Math.min(150, ((minutos - 3) * 60 * 1.2) / 2);
       const ofertas = await this.contexto.cercanos(recintoId, clienteId, origen, presupuestoIda);
       destino = ofertas
-        .filter((o) => o.tipo === 'moneda' || o.tipo === 'drop')
+        .filter((o) => o.tipo === 'drop' && o.localId !== localId)
         .sort((a, b) => (a.trafico ?? 0) - (b.trafico ?? 0) || a.metros - b.metros)[0] ?? ofertas.find((o) => o.tipo === 'promocion' && o.localId !== localId);
       if (destino) {
         ruta = await this.orientacion.ruta(recintoId, origen, destino.nodoId);
-        borrador +=
-          destino.tipo === 'moneda'
-            ? ` Mientras esperas, camina ${ruta?.metros ?? Math.round(destino.metros)} metros hasta el cartel ${de(destino.lugar)} y reclama una moneda de ${destino.puntos} puntos; te aviso cuando esté listo.`
-            : ` Mientras esperas, a ${ruta?.metros ?? Math.round(destino.metros)} metros ${destino.texto}; te aviso cuando esté listo.`;
+        borrador += ` Mientras esperas, a ${ruta?.metros ?? Math.round(destino.metros)} metros ${destino.texto}; te aviso cuando esté listo.`;
       } else borrador += ' Te aviso cuando esté listo.';
     } else borrador += ' Te aviso cuando esté listo.';
     return this.emitir(recintoId, clienteId, 'espera_comida', borrador, destino ? [destino.texto] : [], [l.nombre, String(minutos)], {
       ruta,
-      ar: destino?.hitoCodigo ? { tipo: destino.tipo as 'drop' | 'moneda', codigo: destino.hitoCodigo, lugar: destino.lugar } : undefined,
+      acciones: destino?.tipo === 'drop' ? [VER_DROPS] : undefined,
     }, false, silencioso);
   }
 
@@ -241,7 +234,7 @@ export class OrquestadorJarvis implements OnModuleInit {
     const borrador = `A ${metros} metros, ${mejor.texto}.`;
     return this.emitir(
       recintoId, clienteId, 'venta_cruzada', borrador, ofertas.slice(0, 3).map((o) => o.texto), [mejor.lugar.split(' (')[0]],
-      { ruta, ar: mejor.hitoCodigo ? { tipo: mejor.tipo as 'drop' | 'moneda', codigo: mejor.hitoCodigo, lugar: mejor.lugar } : undefined },
+      { ruta, acciones: mejor.tipo === 'drop' ? [VER_DROPS] : undefined },
       !forzar,
       silencioso,
     );
@@ -263,7 +256,7 @@ export class OrquestadorJarvis implements OnModuleInit {
       const ruta = await this.orientacion.ruta(recintoId, nodo, `local:${listo.local_id}`);
       return this.emitir(recintoId, clienteId, 'bienvenida', `Hola, ${nombre}. Tu pedido de ${listo.nombre} ya está listo, a ${ruta?.metros ?? 0} metros.`, [], [listo.nombre], { ruta }, true);
     }
-    const ofertas = (await this.contexto.cercanos(recintoId, clienteId, nodo, 60)).filter((o) => o.tipo !== 'moneda');
+    const ofertas = await this.contexto.cercanos(recintoId, clienteId, nodo, 60);
     const mejor = ofertas.sort((a, b) => PRIORIDAD[a.tipo] - PRIORIDAD[b.tipo] || a.metros - b.metros)[0];
     if (!mejor) return null;
     const ruta = await this.orientacion.ruta(recintoId, nodo, mejor.nodoId);
@@ -271,16 +264,16 @@ export class OrquestadorJarvis implements OnModuleInit {
   }
 
   // ------------------------------------------------------------------ Drop lanzado → avisar a quienes están cerca
-  async avisarDrop(recintoId: string, dropId: string, hitoCodigo: string) {
-    const hito = await one<{ id: string; nombre: string }>(this.db, `select id, nombre from nodo_ubicacion where codigo_qr = $1`, [hitoCodigo]);
-    const drop = await one<{ mensaje: string; producto: string; precio_especial: number }>(
+  async avisarDrop(recintoId: string, dropId: string, localId: string) {
+    const nodoId = `local:${localId}`;
+    const drop = await one<{ mensaje: string; producto: string; precio_especial: number; local: string }>(
       this.db,
-      `select d.mensaje, p.nombre as producto, d.precio_especial from drop_espacial d join producto p on p.id = d.producto_id where d.id = $1`,
-      [dropId],
+      `select d.mensaje, p.nombre as producto, d.precio_especial, l.nombre as local from drop_espacial d join producto p on p.id = d.producto_id join local l on l.id = $2 where d.id = $1`,
+      [dropId, localId],
     );
-    if (!hito || !drop) return 0;
-    const { g } = await this.orientacion.distancias(recintoId, hito.id, 0);
-    const cerca = alcanzables(g.ady, hito.id, 120);
+    const { g } = await this.orientacion.distancias(recintoId, nodoId, 0);
+    if (!drop || !g.nodos.has(nodoId)) return 0;
+    const cerca = alcanzables(g.ady, nodoId, 120);
     const clientes = await many<{ cliente_id: string; nodo_id: string }>(
       this.db,
       `select pc.cliente_id, pc.nodo_id from posicion_cliente pc join cliente_perfil p on p.usuario_id = pc.cliente_id
@@ -288,12 +281,11 @@ export class OrquestadorJarvis implements OnModuleInit {
       [[...cerca.keys()]],
     );
     for (const c of clientes) {
-      const ruta = await this.orientacion.ruta(recintoId, c.nodo_id, hito.id);
-      const lugar = hito.nombre.replace(/^el cartel (del |de )/, (_m, p: string) => (p === 'del ' ? 'el ' : ''));
+      const ruta = await this.orientacion.ruta(recintoId, c.nodo_id, nodoId);
       await this.emitir(
         recintoId, c.cliente_id, 'drop_cercano',
-        `Hay un Drop en ${hito.nombre}, a ${ruta?.metros ?? Math.round(cerca.get(c.nodo_id) ?? 0)} metros de ti: ${drop.producto} a ${dinero(drop.precio_especial)}.`,
-        [drop.mensaje], [drop.producto], { ruta, ar: { tipo: 'drop', codigo: hitoCodigo, lugar } }, false,
+        `Hay un Drop en ${drop.local}, a ${ruta?.metros ?? Math.round(cerca.get(c.nodo_id) ?? 0)} metros de ti: ${drop.producto} a ${dinero(drop.precio_especial)}.`,
+        [drop.mensaje], [drop.producto, drop.local], { ruta, acciones: [VER_DROPS] }, false,
       );
     }
     return clientes.length;

@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Db, many, one } from '../../infra/db/db.js';
+import { Db, Queryable, many, one } from '../../infra/db/db.js';
 import { RealtimeService } from '../../infra/realtime/realtime.service.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { codigoLegible } from '../../common/util.js';
@@ -56,6 +56,17 @@ export class RecompensasService implements OnModuleInit, OnModuleDestroy {
     for (const v of vencidos) this.rt.aUsuario(v.cliente_id, 'canje', { id: v.id, estado: 'vencido' });
   }
 
+  private async validarPromocion(q: Queryable, promocionId: string | null, clienteId: string) {
+    if (!promocionId) return;
+    const p = await one(q, `select p.id from promocion p left join segmento s on s.id=p.segmento_id
+      where p.id=$1 and p.estado='aprobada' and p.tipo='cupon'
+      and (now() at time zone 'America/La_Paz')::date between p.inicio and p.fin
+      and extract(dow from now() at time zone 'America/La_Paz')::int=any(p.dias_semana)
+      and (now() at time zone 'America/La_Paz')::time between p.hora_inicio and p.hora_fin
+      and (p.segmento_id is null or $2::uuid=any(s.cliente_ids))`,[promocionId,clienteId]);
+    if (!p) throw new BadRequestException('La promoción no está vigente o no corresponde a este cliente');
+  }
+
   /** HU-C07: catálogo ordenado por «puedes canjear ahora» y luego por costo. */
   async catalogo(recintoId: string, clienteId: string | null) {
     const disp = clienteId ? (await this.fidelizacion.disponible(this.db, clienteId)).disponible : null;
@@ -63,11 +74,11 @@ export class RecompensasService implements OnModuleInit, OnModuleDestroy {
       this.db,
       `select r.*, l.nombre as local, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y
        from recompensa r left join local l on l.id = r.local_id
-       where r.recinto_id = $1 and r.activo and (r.stock is null or r.stock > 0)
-         and (r.vigencia_desde is null or r.vigencia_desde <= current_date)
-         and (r.vigencia_hasta is null or r.vigencia_hasta >= current_date)
+       where r.recinto_id = $1 and r.activo and (r.promocion_id is null or exists (select 1 from promocion p left join segmento s on s.id=p.segmento_id where p.id=r.promocion_id and p.estado='aprobada' and (p.segmento_id is null or $2::uuid=any(s.cliente_ids)) and (now() at time zone 'America/La_Paz')::date between p.inicio and p.fin and extract(dow from now() at time zone 'America/La_Paz')::int=any(p.dias_semana) and (now() at time zone 'America/La_Paz')::time between p.hora_inicio and p.hora_fin)) and (r.stock is null or r.stock > 0)
+         and (r.vigencia_desde is null or r.vigencia_desde <= (now() at time zone 'America/La_Paz')::date)
+         and (r.vigencia_hasta is null or r.vigencia_hasta >= (now() at time zone 'America/La_Paz')::date)
        order by r.costo_puntos`,
-      [recintoId],
+      [recintoId,clienteId],
     );
     const lista = filas.map((r) => ({
       ...r,
@@ -82,9 +93,11 @@ export class RecompensasService implements OnModuleInit, OnModuleDestroy {
   /** HU-C08: emite el cupón con QR de un solo uso válido 15 minutos. */
   async canjear(recintoId: string, clienteId: string, recompensaId: string) {
     const r = await this.db.tx(async (q) => {
-      const rec = await one<any>(q, 'select * from recompensa where id = $1 and recinto_id = $2 and activo for update', [recompensaId, recintoId]);
+      const rec = await one<any>(q, `select * from recompensa where id = $1 and recinto_id = $2 and activo and (vigencia_desde is null or vigencia_desde <= (now() at time zone 'America/La_Paz')::date) and (vigencia_hasta is null or vigencia_hasta >= (now() at time zone 'America/La_Paz')::date) for update`, [recompensaId, recintoId]);
       if (!rec) throw new NotFoundException('La recompensa no existe o ya no está disponible');
-      if (rec.stock !== null && rec.stock <= 0) throw new BadRequestException('Se agotó esta recompensa');
+      await this.validarPromocion(q,rec.promocion_id,clienteId);
+      const reservas = await one<{n:number}>(q,"select count(*)::int n from canje where recompensa_id=$1 and estado='emitido' and expira_en>now()",[rec.id]);
+      if (rec.stock !== null && rec.stock - (reservas?.n ?? 0) <= 0) throw new BadRequestException('Se agotó esta recompensa');
       await q.query('select id from usuario where id = $1 for update', [clienteId]);
       const { disponible } = await this.fidelizacion.disponible(q, clienteId);
       if (disponible < rec.costo_puntos) throw new BadRequestException(`Te faltan ${rec.costo_puntos - disponible} puntos para esta recompensa`);
@@ -100,6 +113,7 @@ export class RecompensasService implements OnModuleInit, OnModuleDestroy {
       return { ...c, qr: `PPC:${c.codigo}`, recompensa: rec.nombre };
     });
     this.rt.aUsuario(clienteId, 'puntos', { tipo: 'reserva' });
+    this.rt.aUsuario(clienteId, 'canje', { id:r.id,estado:'emitido' });
     return r;
   }
 
@@ -154,8 +168,10 @@ export class RecompensasService implements OnModuleInit, OnModuleDestroy {
   async entregarCupon(s: Sesion, codigo: string) {
     const cod = this.leerCodigo(codigo);
     const r = await this.db.tx(async (q) => {
-      const c = await one<any>(q, `select c.*, r.local_id, r.stock, r.nombre from canje c join recompensa r on r.id = c.recompensa_id where c.codigo = $1 for update of c`, [cod]);
+      const c = await one<any>(q, `select c.*, r.local_id, r.stock, r.nombre, r.recinto_id from canje c join recompensa r on r.id = c.recompensa_id where c.codigo = $1 for update of c, r`, [cod]);
       if (!c) throw new NotFoundException('Cupón no encontrado');
+      if (c.recinto_id !== s.recintoId) throw new ForbiddenException('Este cupón corresponde a otro recinto');
+      if (c.stock !== null && c.stock <= 0) throw new BadRequestException('Se agotó esta recompensa');
       if (c.estado === 'validado') throw new BadRequestException('Este cupón ya fue usado');
       if (c.estado === 'vencido' || new Date(c.expira_en) <= new Date()) {
         await q.query(`update canje set estado = 'vencido' where id = $1`, [c.id]);

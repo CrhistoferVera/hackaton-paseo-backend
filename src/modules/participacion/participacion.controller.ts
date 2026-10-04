@@ -1,16 +1,18 @@
-import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { Roles, SesionActual } from '../../common/auth/auth.guard.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { ZodPipe, zFecha, zHora, zUuid } from '../../common/zod.pipe.js';
 import { EventosService } from './eventos.service.js';
-import { ExperienciasService } from './experiencias.service.js';
+import { DropsService } from './drops.service.js';
 import { MisionesService } from './misiones.service.js';
 import { PromocionesService } from './promociones.service.js';
 
 const PromocionSchema = z.object({
   titulo: z.string().min(3),
   tipo: z.enum(['puntos_dobles', 'cupon']),
+  costoPuntos: z.number().int().positive().optional(),
   multiplicador: z.number().min(1).max(5).optional(),
   descripcion: z.string().optional(),
   segmentoId: zUuid.nullable().optional(),
@@ -21,7 +23,7 @@ const PromocionSchema = z.object({
   fin: zFecha,
   localId: zUuid.nullable().optional(),
 });
-const RevisionSchema = z.object({ estado: z.enum(['aprobada', 'rechazada']), comentario: z.string().optional() });
+const RevisionSchema = z.object({ estado: z.enum(['aprobada', 'rechazada']), comentario: z.string().optional(), costoPuntos: z.number().int().positive().optional() });
 const MisionSchema = z.object({
   nombre: z.string().min(3),
   descripcion: z.string().min(3),
@@ -39,9 +41,9 @@ const MisionSchema = z.object({
   vigenciaDesde: zFecha,
   vigenciaHasta: zFecha,
 });
-const HitoSchema = z.object({ codigo: z.string().min(4), lat: z.number().optional(), lng: z.number().optional() });
+const ReclamoDropSchema = z.object({ lat: z.number().optional(), lng: z.number().optional() });
 const DropSchema = z.object({
-  zonaId: zUuid,
+  zonaId: zUuid.nullable().optional(),
   productoId: zUuid,
   precioEspecial: z.number().positive(),
   mensaje: z.string().min(3).max(140),
@@ -55,7 +57,7 @@ export class ParticipacionClienteController {
   constructor(
     private readonly misiones: MisionesService,
     private readonly promociones: PromocionesService,
-    private readonly exp: ExperienciasService,
+    private readonly drops: DropsService,
   ) {}
 
   /** HU-C13 */
@@ -69,26 +71,21 @@ export class ParticipacionClienteController {
     return this.promociones.vigentes(s.recintoId, s.sub);
   }
 
-  /** HU-X04: reconocer el cartel del hito y ver qué ofrece. */
-  @Post('hitos/inspeccionar')
-  inspeccionar(@SesionActual() s: Sesion, @Body(new ZodPipe(HitoSchema)) d: z.infer<typeof HitoSchema>) {
-    return this.exp.inspeccionar(s.recintoId, s.sub, d.codigo);
+  /** HU-X05: Drops abiertos ahora (con cupos y si ya lo reclamé). */
+  @Get('drops/activos')
+  dropsActivos(@SesionActual() s: Sesion) {
+    return this.drops.activos(s.recintoId, s.sub);
   }
 
-  @Post('hitos/reclamar')
-  reclamar(@SesionActual() s: Sesion, @Body(new ZodPipe(HitoSchema)) d: z.infer<typeof HitoSchema>) {
-    return this.exp.reclamarHito(s.recintoId, s.sub, d.codigo, d.lat, d.lng);
+  @Post('drops/:id/reclamar')
+  reclamarDrop(@SesionActual() s: Sesion, @Param('id') id: string, @Body(new ZodPipe(ReclamoDropSchema)) d: z.infer<typeof ReclamoDropSchema>) {
+    return this.drops.reclamar(s.recintoId, s.sub, id, d.lat, d.lng);
   }
 
-  /** HU-X05 */
-  @Post('drops/reclamar')
-  reclamarDrop(@SesionActual() s: Sesion, @Body(new ZodPipe(HitoSchema)) d: z.infer<typeof HitoSchema>) {
-    return this.exp.reclamarDrop(s.recintoId, s.sub, d.codigo, d.lat, d.lng);
-  }
-
+  /** Precios especiales ya desbloqueados (se usan en PaseoYa). */
   @Get('drops')
   misDrops(@SesionActual() s: Sesion) {
-    return this.exp.misDrops(s.sub);
+    return this.drops.misDrops(s.sub);
   }
 }
 
@@ -115,7 +112,7 @@ export class ParticipacionAdminController {
   constructor(
     private readonly misiones: MisionesService,
     private readonly promociones: PromocionesService,
-    private readonly exp: ExperienciasService,
+    private readonly drops: DropsService,
   ) {}
 
   @Get('promociones')
@@ -131,7 +128,7 @@ export class ParticipacionAdminController {
   /** HU-A06 */
   @Post('promociones/:id/revision')
   revisar(@SesionActual() s: Sesion, @Param('id') id: string, @Body(new ZodPipe(RevisionSchema)) d: z.infer<typeof RevisionSchema>) {
-    return this.promociones.revisar(s, id, d.estado, d.comentario);
+    return this.promociones.revisar(s, id, d.estado, d.comentario, d.costoPuntos);
   }
 
   /** HU-A05 */
@@ -155,19 +152,14 @@ export class ParticipacionAdminController {
     return this.misiones.activar(s, id, d.activa);
   }
 
-  @Get('hitos')
-  hitos(@SesionActual() s: Sesion) {
-    return this.exp.hitos(s.recintoId);
-  }
-
   @Get('drops')
-  drops(@SesionActual() s: Sesion) {
-    return this.exp.drops(s.recintoId);
+  listarDrops(@SesionActual() s: Sesion) {
+    return this.drops.drops(s.recintoId);
   }
 
   @Post('drops')
   lanzar(@SesionActual() s: Sesion, @Body(new ZodPipe(DropSchema)) d: z.infer<typeof DropSchema>) {
-    return this.exp.lanzarDrop(s, d);
+    return this.drops.lanzarDrop(s, d);
   }
 }
 
@@ -227,6 +219,15 @@ export class ComercioParticipacionController {
     return this.eventos.delLocal(s.localId!);
   }
 
+  /** QR de asistencia de un evento propio, para imprimir. */
+  @Get('eventos/:id/qr.pdf')
+  async qrEvento(@SesionActual() s: Sesion, @Param('id') id: string, @Res() res: Response) {
+    const pdf = await this.eventos.qrPdf(s.recintoId, id, s.localId!);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="qr-evento-${id.slice(0, 8)}.pdf"`);
+    res.end(pdf);
+  }
+
   @Post('eventos')
   proponer(@SesionActual() s: Sesion, @Body(new ZodPipe(ActividadSchema)) d: z.infer<typeof ActividadSchema>) {
     return this.eventos.proponer(s, d);
@@ -251,6 +252,15 @@ export class EventosAdminController {
   @Post('eventos')
   crear(@SesionActual() s: Sesion, @Body(new ZodPipe(ActividadSchema.extend({ localId: zUuid.nullable().optional() }))) d: z.infer<typeof ActividadSchema> & { localId?: string | null }) {
     return this.eventos.crearDeAdmin(s, d);
+  }
+
+  /** QR de asistencia para imprimir y poner en el evento: quien lo escanea durante el evento suma sus puntos. */
+  @Get('eventos/:id/qr.pdf')
+  async qrEvento(@SesionActual() s: Sesion, @Param('id') id: string, @Res() res: Response) {
+    const pdf = await this.eventos.qrPdf(s.recintoId, id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="qr-evento-${id.slice(0, 8)}.pdf"`);
+    res.end(pdf);
   }
 
   @Post('eventos/:id/revision')
@@ -293,5 +303,11 @@ export class EventosClienteController {
   @Get()
   proximos(@SesionActual() s: Sesion) {
     return this.eventos.proximos(s.recintoId);
+  }
+
+  /** QR del evento (`PPA:<id>`): registra la asistencia y suma los puntos del evento. */
+  @Post('asistir')
+  asistir(@SesionActual() s: Sesion, @Body(new ZodPipe(z.object({ codigo: z.string().min(5) }))) d: { codigo: string }) {
+    return this.eventos.asistirPorCodigo(s.recintoId, s.sub, d.codigo);
   }
 }

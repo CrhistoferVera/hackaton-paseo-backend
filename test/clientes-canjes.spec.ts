@@ -1,0 +1,103 @@
+import { PGlite } from '@electric-sql/pglite';
+import { randomUUID } from 'node:crypto';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { MIGRACIONES } from '../src/infra/db/migraciones.js';
+import { LedgerRepository } from '../src/modules/fidelizacion/ledger.repository.js';
+import { FidelizacionService } from '../src/modules/fidelizacion/fidelizacion.service.js';
+import { PromocionesService } from '../src/modules/participacion/promociones.service.js';
+import { EventosService } from '../src/modules/participacion/eventos.service.js';
+import { RecompensasService } from '../src/modules/recompensas/recompensas.service.js';
+import { IdentidadService } from '../src/modules/identidad/identidad.service.js';
+import { ComprasService } from '../src/modules/comercio/compras.service.js';
+import { totp } from '../src/common/util.js';
+
+describe('Cliente, aprobación y canje de puntos',()=>{
+  let pg:PGlite, db:any, fid:FidelizacionService, promos:PromocionesService, recompensas:RecompensasService, eventos:EventosService, compras:ComprasService;
+  let recinto:string, cliente:string, local:string, comercio:any, admin:any;
+  const rt={aUsuario:vi.fn(),aSala:vi.fn(),aLocal:vi.fn(),catalogo:vi.fn()};
+  const audit={registrar:vi.fn()}, notif={crear:vi.fn()}, telemetry={registrar:vi.fn(),registrarSuelto:vi.fn()};
+  const secreto='1234567890abcdef1234567890abcdef';
+  const hoy=()=>new Date(Date.now()-4*3600_000).toISOString().slice(0,10);
+  const fila=async(sql:string,params:unknown[]=[]) => (await pg.query<any>(sql,params)).rows[0];
+  beforeAll(async()=>{
+    pg=new PGlite();for(const m of MIGRACIONES) await pg.exec(m.sql);
+    db={query:pg.query.bind(pg),tx:(fn:any)=>pg.transaction(fn)};
+    recinto=(await fila("insert into recinto(nombre,lat,lng) values ('Pruebas',0,0) returning id")).id;
+    cliente=(await fila("insert into usuario(recinto_id,rol,nombre) values ($1,'cliente','Ana') returning id",[recinto])).id;
+    const staff=(await fila("insert into usuario(recinto_id,rol,nombre) values ($1,'comercio','Comercio') returning id",[recinto])).id;
+    const adminId=(await fila("insert into usuario(recinto_id,rol,nombre) values ($1,'admin','Admin') returning id",[recinto])).id;
+    const cat=(await fila("insert into categoria(nombre,ambito) values ('Café','comida') returning id")).id;
+    local=(await fila("insert into local(recinto_id,nombre,categoria_id,piso,sector,numero_local,coord_x,coord_y,codigo_puerta) values ($1,'Café',$2,'N1','A','1',0,0,'PUERTA') returning id",[recinto,cat])).id;
+    comercio={sub:staff,rol:'comercio',recintoId:recinto,localId:local};admin={sub:adminId,rol:'admin',recintoId:recinto};
+    await pg.query("insert into cliente_perfil(usuario_id,codigo_cliente,secreto_pase,codigo_invitacion,consent_terminos_en,alias) values ($1,'ABCDEFGH',$2,'INVITACION',now(),'Ana')",[cliente,secreto]);
+    const ledger=new LedgerRepository();fid=new FidelizacionService(db,ledger,rt as any,audit as any);
+    vi.spyOn(fid,'reglaVigente').mockResolvedValue({id:randomUUID(),version:1,bs_por_punto:1,valor_punto_bs:0.02,multiplicadores_categoria:{},multiplicadores_horario:[],dias_vencimiento:365,niveles:[{nombre:'Bronce',minimo:0,beneficios:[]}],puntos_referido:0} as any);
+    await ledger.insertar(db,{recintoId:recinto,clienteId:cliente,tipo:'bono',puntos:1000,descripcion:'Saldo inicial'});
+    promos=new PromocionesService(db,rt as any,audit as any,notif as any);
+    recompensas=new RecompensasService(db,fid,{evaluarCanje:vi.fn()} as any,telemetry as any,audit as any,rt as any);
+    eventos=new EventosService(db,rt as any,notif as any,audit as any,{} as any,{publicar:vi.fn()} as any,fid);
+    const identidad=new IdentidadService(db,fid,telemetry as any,audit as any);
+    compras=new ComprasService(db,identidad,fid,promos,{marcarCompra:vi.fn()} as any,{evaluarCompra:vi.fn()} as any,telemetry as any,notif as any,rt as any,{publicar:vi.fn()} as any);
+  },30000);
+  afterAll(async()=>{await new Promise(r=>setTimeout(r,50));await pg?.close();});
+  it('una promoción aprobada aparece en canjes con el costo configurado',async()=>{
+    const p=await promos.crearDeLocal(comercio,{titulo:'Café por puntos',tipo:'cupon',costoPuntos:100,inicio:hoy(),fin:hoy(),horaFin:'23:59:59'});
+    expect((await recompensas.catalogo(recinto,cliente)).recompensas).toHaveLength(0);
+    await promos.revisar(admin,p.id,'aprobada');
+    const cat=await recompensas.catalogo(recinto,cliente);
+    expect(cat.recompensas[0]).toMatchObject({promocion_id:p.id,costo_puntos:100,puedeCanjear:true});
+    expect(rt.catalogo).toHaveBeenCalledWith(recinto);
+    await promos.revisar(admin,p.id,'aprobada');
+    expect((await recompensas.catalogo(recinto,cliente)).recompensas).toHaveLength(1);
+  });
+  it('reserva 100 puntos, admite código manual y debita una sola vez al canjear',async()=>{
+    const rec=(await recompensas.catalogo(recinto,cliente)).recompensas[0];
+    const c=await recompensas.canjear(recinto,cliente,rec.id);
+    expect(await fid.disponible(db,cliente)).toMatchObject({saldo:1000,reservado:100,disponible:900});
+    expect(await recompensas.consultarCupon(comercio,c.codigo)).toMatchObject({valido:true,costoPuntos:100});
+    await recompensas.entregarCupon(comercio,c.codigo);
+    await expect(recompensas.entregarCupon(comercio,c.qr)).rejects.toMatchObject({status:400});
+    expect(await fid.disponible(db,cliente)).toMatchObject({saldo:900,reservado:0,disponible:900});
+    expect((await fid.movimientos(cliente,{})).some((m:any)=>m.tipo==='canje' && m.puntos===-100)).toBe(true);
+  });
+  it('vencer un cupón libera la reserva sin cobrar y nunca permite gastar saldo insuficiente',async()=>{
+    const rec=(await recompensas.catalogo(recinto,cliente)).recompensas[0];
+    const c=await recompensas.canjear(recinto,cliente,rec.id);
+    await pg.query("update canje set expira_en=now()-interval '1 minute' where id=$1",[c.id]);
+    await recompensas.vencerCupones();
+    expect(await fid.disponible(db,cliente)).toMatchObject({saldo:900,reservado:0});
+    await expect(recompensas.entregarCupon(comercio,c.codigo)).rejects.toMatchObject({status:400});
+    await pg.query('update recompensa set costo_puntos=10000 where id=$1',[rec.id]);
+    await expect(recompensas.canjear(recinto,cliente,rec.id)).rejects.toMatchObject({status:400});
+    await pg.query('update recompensa set costo_puntos=100 where id=$1',[rec.id]);
+  });
+  it('no entrega promociones fuera de horario o rechazadas',async()=>{
+    const p=await promos.crearDeLocal(comercio,{titulo:'Fuera de horario',tipo:'cupon',costoPuntos:50,inicio:hoy(),fin:hoy(),horaInicio:'00:00',horaFin:'00:00'});
+    await promos.revisar(admin,p.id,'aprobada');const rec=await fila('select id from recompensa where promocion_id=$1',[p.id]);
+    await expect(recompensas.canjear(recinto,cliente,rec.id)).rejects.toMatchObject({status:400});
+    await promos.revisar(admin,p.id,'rechazada','No disponible');
+    expect((await recompensas.catalogo(recinto,cliente)).recompensas.some(r=>r.id===rec.id)).toBe(false);
+  });
+  it('multiplica una venta identificada por código único y no duplica los puntos al reintentar',async()=>{
+    await promos.crearDeAdmin(admin,{titulo:'Puntos triples',tipo:'puntos_dobles',multiplicador:3,inicio:hoy(),fin:hoy(),horaFin:'23:59:59'});
+    const antes=(await fid.disponible(db,cliente)).saldo;
+    const codigo='ABCDEFGH:'+totp(secreto,Date.now());
+    expect(await compras.previsualizar(comercio,'PP1:'+codigo)).toMatchObject({clienteId:cliente,promocion:{multiplicador:3}});
+    const cmd={codigoCliente:codigo,montoBs:25,claveIdempotencia:randomUUID()};
+    expect(await compras.registrar(comercio,cmd)).toMatchObject({puntos:75,montoBs:25});
+    await compras.registrar(comercio,cmd);
+    expect((await fid.disponible(db,cliente)).saldo).toBe(antes+75);
+    await expect(compras.registrar(comercio,{clienteId:cliente,codigoCliente:'123456',montoBs:25,claveIdempotencia:randomUUID()})).rejects.toMatchObject({status:400});
+  });
+  it('la propuesta de evento aparece pendiente y notifica a administración; aprobar publica el catálogo',async()=>{
+    rt.aSala.mockClear();
+    const inicio=new Date(Date.now()+3600_000).toISOString(),fin=new Date(Date.now()+7200_000).toISOString();
+    const e=await eventos.proponer(comercio,{titulo:'Taller de café',tipo:'taller',inicio,fin});
+    expect((await eventos.todos(recinto,'pendiente')).some((x:any)=>x.id===e.id)).toBe(true);
+    expect(rt.aSala).toHaveBeenCalledWith(recinto,'eventos',{});
+    await eventos.revisarActividad(admin,e.id,'aprobada',undefined,20);
+    expect((await eventos.proximos(recinto)).some((x:any)=>x.id===e.id)).toBe(true);
+    await eventos.revisarActividad(admin,e.id,'rechazada','Cancelado');
+    expect((await eventos.proximos(recinto)).some((x:any)=>x.id===e.id)).toBe(false);
+  });
+});

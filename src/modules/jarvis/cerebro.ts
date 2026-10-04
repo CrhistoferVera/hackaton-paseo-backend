@@ -93,11 +93,6 @@ export const SISTEMA_ANALISTA = `Eres el analista de datos del Centro de Intelig
 Te dan la respuesta correcta ya armada con datos reales. Reescríbela clara y profesional, en español, como un analista que explica a su jefa.
 Reglas: conserva exactamente todos los números, porcentajes, nombres de locales y fechas; no agregues datos; máximo 4 oraciones; sin emojis ni listas.`;
 
-export const SISTEMA_LIBRE = `Eres Jarvis, el asistente de voz del Paseo Aranjuez, un centro comercial en La Paz, Bolivia. Hablas con tuteo, cálido y breve.
-Responde la pregunta del cliente usando solo los datos del Paseo que te doy. No inventes horarios, precios, lugares ni políticas.
-Si los datos no alcanzan, dilo con honestidad en una frase y ofrece algo que sí puedes hacer: buscar un producto, ver promociones, eventos o cómo llegar a un lugar.
-Máximo 2 oraciones, sin emojis ni listas.`;
-
 /**
  * Cerebro de Jarvis (Strategy con respaldo): prueba los motores en orden y, si ninguno responde
  * a tiempo o la respuesta pierde datos clave, usa el borrador determinista. Siempre hay respuesta.
@@ -145,32 +140,11 @@ export class CerebroJarvis implements OnModuleInit {
       if (!(await m.disponible())) continue;
       const r = await m.generar(opciones.sistema ?? (chat ? SISTEMA_CHAT : SISTEMA_JARVIS), prompt, { maxTokens: chat ? 130 : 90, timeoutMs: this.timeoutMs });
       const texto = r ? CerebroJarvis.limpiar(r, chat ? 3 : 2) : null;
-      if (texto && claves.every((c) => CerebroJarvis.normalizar(texto).includes(CerebroJarvis.normalizar(c))) && CerebroJarvis.mismosNumeros(borrador, texto) && !CerebroJarvis.primeraPersonaNueva(borrador, texto) && !CerebroJarvis.agregaSaludo(borrador, texto) && texto.length <= borrador.length * 1.5 + 30) {
+      if (texto && claves.every((c) => CerebroJarvis.normalizar(texto).includes(CerebroJarvis.normalizar(c))) && CerebroJarvis.mismosNumeros(borrador, texto) && !CerebroJarvis.primeraPersonaNueva(borrador, texto) && !CerebroJarvis.agregaSaludo(borrador, texto) && !CerebroJarvis.cambiaSentido(borrador, texto, opciones.pregunta ?? '') && texto.length <= borrador.length * 1.5 + 30) {
         return { texto, motor: m.nombre, latenciaMs: Date.now() - t0 };
       }
     }
     return { texto: borrador, motor: 'plantilla', latenciaMs: Date.now() - t0 };
-  }
-
-  /**
-   * Respuesta libre para preguntas poco comunes, solo con los datos dados. Se descarta si menciona
-   * una cifra que no está en los datos (el modelo no puede inventar horarios ni precios).
-   */
-  async responderLibre(pregunta: string, datos: string[], historial: string): Promise<{ texto: string; motor: string; latenciaMs: number } | null> {
-    const t0 = Date.now();
-    const prompt = `Datos del Paseo ahora:\n- ${datos.join('\n- ')}\n\n${historial ? `Conversación:\n${historial}\n\n` : ''}Pregunta del cliente: ${pregunta}`;
-    const permitidos = new Set(CerebroJarvis.numeros(datos.join(' ') + ' ' + pregunta));
-    for (const m of this.motores) {
-      if (!(await m.disponible())) continue;
-      const r = await m.generar(SISTEMA_LIBRE, prompt, { maxTokens: 110, timeoutMs: this.timeoutMs + 2000 });
-      const texto = r ? CerebroJarvis.limpiar(r) : null;
-      if (texto && texto.length > 8 && CerebroJarvis.numeros(texto).every((n) => permitidos.has(n))) return { texto, motor: m.nombre, latenciaMs: Date.now() - t0 };
-    }
-    return null;
-  }
-
-  static numeros(s: string) {
-    return (s.match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => String(Number(n.replace(',', '.'))));
   }
 
   /** Clasificación breve en JSON con el primer motor disponible (sin respaldo: devuelve null). */
@@ -195,6 +169,30 @@ export class CerebroJarvis implements OnModuleInit {
     const limpio = (s: string) => CerebroJarvis.normalizar(s).replace(/\bde paso\b/g, '');
     const enBorrador = new Set(limpio(borrador).match(verbos) ?? []);
     return (limpio(texto).match(verbos) ?? []).some((v) => !enBorrador.has(v));
+  }
+
+  /**
+   * El modelo puede cambiar el orden y las palabras de enlace, pero no el sentido: no puede quitar ni
+   * poner una negación («no atiende» ↔ «atiende») ni agregar nombres o palabras de contenido que no
+   * estaban en el borrador ni en la pregunta (así no inventa lugares, productos ni condiciones).
+   */
+  static cambiaSentido(borrador: string, texto: string, pregunta = '') {
+    const n = (x: string) => CerebroJarvis.normalizar(x).replace(/[^a-z0-9ñ\s]/g, ' ');
+    const negaciones = (s: string) => (n(s).match(/\b(no|nunca|ningun|ninguna|ninguno|sin|agotad[oa]s?|cerrad[oa]s?)\b/g) ?? []).length;
+    if ((negaciones(borrador) > 0) !== (negaciones(texto) > 0)) return true;
+    const raiz = (w: string) => w.replace(/(es|s)$/, '').replace(/[aoe]$/, '');
+    const base = new Set([...n(borrador).split(/\s+/), ...n(pregunta).split(/\s+/)].map(raiz));
+    const enlace = /^(ahora|mismo|tambien|ademas|aqui|alli|justo|solo|puedes|quieres|tienes|tiene|esta|estan|hay|para|desde|hasta|cerca|camina|caminando|llegar|llevo|ruta|minuto|metro|aproximadamente|unos|unas|cuesta|precio|ofrece|ofrecen|encuentras|disfruta|disfrutar|aprovecha|aprovechar|claro|perfecto|genial|listo|mira|recuerda|ojo|gusto|ayudo|ayudar|algo|mas|otro|otra|pedir|pedirlo|retirar|retiralo|local|piso|nivel)$/;
+    // Un nombre propio nuevo (no al inicio de una oración) es un dato inventado: «Nike», «Starbucks»
+    const propios = texto
+      .split(/[.!?]\s+/)
+      .flatMap((o) => o.trim().split(/\s+/).slice(1))
+      .filter((w) => /^[A-ZÁÉÍÓÚÑ]/.test(w))
+      .map((w) => raiz(n(w).trim()))
+      .filter((w) => w && !base.has(w));
+    if (propios.length) return true;
+    const nuevas = n(texto).split(/\s+/).filter((w) => w.length >= 5 && !enlace.test(w) && !base.has(raiz(w)));
+    return nuevas.length > 1;
   }
 
   /** «¡Hola, cliente!» a mitad de la conversación suena robótico: se descarta. */

@@ -1,8 +1,11 @@
+import { RealtimeService } from '../../infra/realtime/realtime.service.js';
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import PDFDocument from 'pdfkit';
+import QRCode from 'qrcode';
 import { Db, Queryable, many, one } from '../../infra/db/db.js';
 import type { Sesion } from '../../common/auth/tokens.js';
 import { AuditoriaService, NotificacionesService } from '../nucleo/nucleo.services.js';
-import { ExperienciasService } from './experiencias.service.js';
+import { DropsService } from './drops.service.js';
 import { EventBus } from '../nucleo/event-bus.js';
 import { FidelizacionService } from '../fidelizacion/fidelizacion.service.js';
 
@@ -39,27 +42,73 @@ export class EventosService implements OnModuleInit {
 
   constructor(
     private readonly db: Db,
+    private readonly rt: RealtimeService,
     private readonly notif: NotificacionesService,
     private readonly auditoria: AuditoriaService,
-    private readonly exp: ExperienciasService,
+    private readonly drops: DropsService,
     private readonly bus: EventBus,
     private readonly fidelizacion: FidelizacionService,
   ) {}
 
-  /** Asistencia: escanear la puerta del local anfitrión o el cartel de la zona durante el evento. */
+  /** Asistencia: escanear la puerta del local anfitrión o el QR del evento (`PPA:<id>`) mientras ocurre. */
   onModuleInit() {
     this.bus.on('checkin.registrado', (e) => this.registrarAsistencia(e.recintoId, e.clienteId, { localId: e.localId }).catch((x) => this.log.warn(x.message)));
-    this.bus.on('hito.reclamado', (e) => this.registrarAsistencia(e.recintoId, e.clienteId, { hitoId: e.hitoId }).catch((x) => this.log.warn(x.message)));
   }
 
-  async registrarAsistencia(recintoId: string, clienteId: string, donde: { localId?: string; hitoId?: string }) {
+  /** Escaneo del QR del evento: registra la asistencia (y los puntos) si el evento está ocurriendo. */
+  async asistirPorCodigo(recintoId: string, clienteId: string, codigo: string) {
+    const m = /^PPA:([0-9a-f-]{36})$/i.exec(codigo.trim());
+    if (!m) throw new BadRequestException('Ese QR no es de un evento del Paseo');
+    const a = await one<any>(this.db, `select id, titulo, puntos, inicio, fin from actividad where id = $1 and recinto_id = $2 and estado = 'aprobada'`, [m[1], recintoId]);
+    if (!a) throw new NotFoundException('Evento no encontrado');
+    const ahora = Date.now();
+    if (ahora < new Date(a.inicio).getTime() - 15 * 60_000) throw new BadRequestException(`${a.titulo} todavía no empieza: vuelve a escanear cuando comience`);
+    if (ahora > new Date(a.fin).getTime()) throw new BadRequestException(`${a.titulo} ya terminó`);
+    const ya = await one(this.db, 'select 1 from asistencia_actividad where actividad_id = $1 and cliente_id = $2', [a.id, clienteId]);
+    if (ya) return { actividadId: a.id, titulo: a.titulo, puntos: 0, yaRegistrada: true };
+    await this.registrarAsistencia(recintoId, clienteId, { actividadId: a.id });
+    return { actividadId: a.id, titulo: a.titulo, puntos: a.puntos, yaRegistrada: false };
+  }
+
+  /** Cartel imprimible con el QR de asistencia del evento (`PPA:<id>`). */
+  async qrPdf(recintoId: string, id: string, localId: string | null = null): Promise<Buffer> {
+    const a = await one<any>(
+      this.db,
+      `select a.*, z.nombre as zona from actividad a left join zona z on z.id = a.zona_id where a.id = $1 and a.recinto_id = $2 and ($3::uuid is null or a.local_id = $3)`,
+      [id, recintoId, localId],
+    );
+    if (!a) throw new NotFoundException('Evento no encontrado');
+    const contenido = `PPA:${a.id}`;
+    const png = await QRCode.toBuffer(contenido, { errorCorrectionLevel: 'M', width: 900, margin: 1, color: { dark: '#16140F', light: '#FFFFFF' } });
+    const hora = (d: Date) => new Date(d).toLocaleString('es-BO', { timeZone: 'America/La_Paz', weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+    return new Promise((resolve) => {
+      const doc = new PDFDocument({ size: 'A5', margin: 40 });
+      const partes: Buffer[] = [];
+      doc.on('data', (b: Buffer) => partes.push(b));
+      doc.on('end', () => resolve(Buffer.concat(partes)));
+      const ancho = doc.page.width;
+      doc.rect(0, 0, ancho, 8).fill('#C99A3A');
+      doc.fillColor('#8E6A1E').font('Helvetica-Bold').fontSize(9).text('PASEO POINTS · EVENTO', 40, 36, { characterSpacing: 2 });
+      doc.fillColor('#16140F').font('Times-Roman').fontSize(24).text(a.titulo, 40, 56, { width: ancho - 80 });
+      doc.fillColor('#5F594F').font('Helvetica').fontSize(10).text(`${hora(a.inicio)} · ${a.lugar ?? a.zona ?? ''}`, 40, doc.y + 6, { width: ancho - 80 });
+      const lado = ancho - 140;
+      const y = doc.y + 14;
+      doc.image(png, 70, y, { width: lado, height: lado });
+      doc.fillColor('#16140F').font('Helvetica-Bold').fontSize(13).text(a.puntos ? `Escanea y suma ${a.puntos} puntos por venir` : 'Escanea para registrar tu asistencia', 40, y + lado + 16, { align: 'center', width: ancho - 80 });
+      doc.fillColor('#5F594F').font('Helvetica').fontSize(9).text('Abre la app Paseo Points y toca «Escanear». Vale mientras dura el evento, una vez por persona.', 40, doc.y + 4, { align: 'center', width: ancho - 80 });
+      doc.fillColor('#9A9182').fontSize(7).text(contenido, 40, doc.page.height - 50, { align: 'center', width: ancho - 80 });
+      doc.end();
+    });
+  }
+
+  async registrarAsistencia(recintoId: string, clienteId: string, donde: { localId?: string; actividadId?: string }) {
     const evs = await many<any>(
       this.db,
       `select a.id, a.titulo, a.puntos from actividad a
        where a.recinto_id = $1 and a.estado = 'aprobada' and now() between a.inicio - interval '15 minutes' and a.fin
-         and (a.local_id = $2::uuid or a.zona_id = (select zona_id from hito where id = $3::uuid))
+         and (a.local_id = $2::uuid or a.id = $3::uuid)
          and not exists (select 1 from asistencia_actividad x where x.actividad_id = a.id and x.cliente_id = $4)`,
-      [recintoId, donde.localId ?? null, donde.hitoId ?? null, clienteId],
+      [recintoId, donde.localId ?? null, donde.actividadId ?? null, clienteId],
     );
     for (const ev of evs) {
       await this.db.tx(async (q) => {
@@ -127,6 +176,11 @@ export class EventosService implements OnModuleInit {
       const a = await this.insertarActividad(q, s, { ...d, zonaId: d.zonaId ?? l.zona_id, puntos: 0 }, s.localId!, 'pendiente', d.lugar?.trim() || `${l.nombre}, local ${l.numero_local}`);
       await this.avisarAdmins(q, s.recintoId, 'evento_pendiente', 'Evento por aprobar', `${l.nombre} propone «${d.titulo}»`, { actividadId: a.id });
       return a;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'eventos', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'eventos', {});
+      return r;
     });
   }
 
@@ -137,6 +191,11 @@ export class EventosService implements OnModuleInit {
       const a = await this.insertarActividad(q, s, d, d.localId ?? null, 'aprobada', d.lugar?.trim() || z?.nombre || 'Paseo Aranjuez');
       await this.auditoria.registrar(q, s.sub, 'crear_evento', 'actividad', a.id, null, a);
       return a;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'eventos', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'eventos', {});
+      return r;
     });
   }
 
@@ -154,6 +213,11 @@ export class EventosService implements OnModuleInit {
           estado === 'aprobada' ? `«${antes.titulo}» ya aparece en la app y Jarvis lo recomienda` : `«${antes.titulo}»: ${comentario}`, { actividadId: id });
       }
       return a;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'eventos', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'eventos', {});
+      return r;
     });
   }
 
@@ -218,14 +282,13 @@ export class EventosService implements OnModuleInit {
     if (!sol) throw new NotFoundException('Solicitud no encontrada');
     if (sol.estado !== 'pendiente') throw new BadRequestException('La solicitud ya fue atendida');
     const zonaId = ajustes.zonaId ?? sol.zona_id;
-    if (!zonaId) throw new BadRequestException('Elige la zona del Drop');
-    const drop = await this.exp.lanzarDrop(s, {
+    const drop = await this.drops.lanzarDrop(s, {
       zonaId, productoId: sol.producto_id, precioEspecial: Number(sol.precio_especial), mensaje: sol.mensaje,
       minutos: ajustes.minutos ?? sol.minutos, maxReclamos: ajustes.maxReclamos ?? sol.max_reclamos, localId: sol.local_id,
     });
     await this.db.tx(async (q) => {
       await q.query(`update solicitud_drop set estado = 'lanzada', drop_id = $2, revisado_por = $3 where id = $1`, [id, drop.id, s.sub]);
-      await this.notif.crear(q, sol.creado_por, 'drop_lanzado', 'Tu Drop está activo', `${drop.producto} a Bs ${Number(sol.precio_especial).toFixed(2)} en ${drop.zona}`, { dropId: drop.id });
+      await this.notif.crear(q, sol.creado_por, 'drop_lanzado', 'Tu Drop está activo', `${drop.producto} a Bs ${Number(sol.precio_especial).toFixed(2)} ya está en la app`, { dropId: drop.id });
     });
     return drop;
   }

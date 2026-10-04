@@ -114,7 +114,7 @@ export class InteligenciaService {
         );
         break;
       default:
-        // Visitas = check-ins en locales + reclamos AR + llegadas de PaseoYa (por zona)
+        // Visitas = check-ins en locales + Drops reclamados + llegadas de PaseoYa (por zona)
         porLocal = await many(
           this.db,
           `select c.local_id, count(*)::float8 as valor from checkin_local c join local l on l.id = c.local_id
@@ -132,13 +132,13 @@ export class InteligenciaService {
       [...p, porLocal.map((x) => x.local_id), porLocal.map((x) => Number(x.valor))],
     );
     if (f.metrica === 'visitas') {
-      const ar = await many<{ zona_id: string; n: number }>(
+      const extra = await many<{ zona_id: string; n: number }>(
         this.db,
-        `select zona_id, count(*)::int as n from evento where recinto_id = $1 and tipo in ('hito.reclamado','drop.reclamado','subpedido.entregado')
+        `select zona_id, count(*)::int as n from evento where recinto_id = $1 and tipo in ('drop.reclamado','subpedido.entregado')
            and zona_id is not null and bo(creado_en)::date between $2::date and $3::date and extract(hour from bo(creado_en)) between $4 and $5 group by 1`,
         p,
       );
-      for (const a of ar) {
+      for (const a of extra) {
         const z = zonas.find((x) => x.zona_id === a.zona_id);
         if (z) z.valor = Number(z.valor) + a.n;
         else zonas.push({ zona_id: a.zona_id, valor: a.n });

@@ -5,10 +5,11 @@ import { FidelizacionService } from '../fidelizacion/fidelizacion.service.js';
 import { RecompensasService } from '../recompensas/recompensas.service.js';
 import { PaseoYaService } from '../paseoya/paseoya.service.js';
 import { OrientacionService } from '../orientacion/orientacion.service.js';
-import { NOMBRE_PISO } from '../orientacion/domain/grafo.js';
+import { NOMBRE_PISO, conArticulo } from '../orientacion/domain/grafo.js';
 import { CerebroJarvis } from '../jarvis/cerebro.js';
 import { OrquestadorJarvis } from '../jarvis/orquestador.service.js';
 import { ConocimientoPaseo, type Encontrado, normalizar } from '../jarvis/conocimiento.service.js';
+import { comoLaDijo, esDeCategoria, normalizar as norm, objetoDe, raicesDe, raiz } from '../jarvis/buscador.js';
 import { type Entidades, MemoriaJarvis, type Turno } from '../jarvis/memoria.service.js';
 import { RecomendadorService } from '../jarvis/recomendador.service.js';
 import { de, diaVoz, dinero, duracionVoz, fechaVoz, hhmmBo, horaVoz, lista, lugar } from '../jarvis/voz.js';
@@ -18,11 +19,16 @@ export type Intencion =
   | 'saldo' | 'nivel' | 'canjes' | 'vencimiento' | 'movimientos' | 'puntos_ganar' | 'oportunidades'
   | 'promociones' | 'ofertas' | 'eventos' | 'misiones' | 'drops' | 'parqueo'
   | 'horario' | 'local_info' | 'donde' | 'servicio' | 'precio' | 'producto' | 'tiempo' | 'recomendacion'
-  | 'pedido_estado' | 'pedido_donde' | 'espera' | 'cerca' | 'libre' | 'desconocida';
+  | 'pedido_estado' | 'pedido_donde' | 'espera' | 'cerca' | 'buscar' | 'info' | 'zona' | 'conteo' | 'cartelera' | 'fuera_de_tema'
+  | 'libre' | 'desconocida';
 
+/**
+ * Lo que el modelo local puede elegir cuando las reglas no reconocen la frase. Solo intenciones
+ * cuyo manejador consulta datos del propio cliente o del Paseo; nunca genera la respuesta.
+ */
 const CLASIFICABLES: Intencion[] = [
-  'saldo', 'nivel', 'canjes', 'puntos_ganar', 'oportunidades', 'promociones', 'ofertas', 'eventos', 'misiones', 'drops', 'parqueo', 'horario', 'local_info',
-  'donde', 'servicio', 'precio', 'producto', 'tiempo', 'recomendacion', 'pedido_estado', 'pedido_donde', 'espera', 'cerca', 'libre',
+  'saldo', 'nivel', 'canjes', 'vencimiento', 'movimientos', 'oportunidades', 'promociones', 'ofertas', 'eventos', 'misiones', 'drops', 'parqueo',
+  'recomendacion', 'pedido_estado', 'libre',
 ];
 
 type Ruta = ReturnType<typeof OrientacionService.paraApp>;
@@ -38,7 +44,8 @@ interface Borrador {
   /** acción que Jarvis ofreció («¿te llevo?»): si el cliente dice «sí», se ejecuta */
   propuesta?: { intencion: Intencion; entidades: Entidades };
   ruta?: Ruta;
-  ar?: { tipo: 'drop' | 'moneda'; codigo: string; lugar: string };
+  /** no había datos para responder: tema que se buscó (va al reporte de la administración) */
+  sinDatos?: string;
   productos?: { id: string; nombre: string; precioBs: number; local: string; enlace: string }[];
   recompensas?: unknown[];
   promociones?: unknown[];
@@ -47,7 +54,7 @@ interface Borrador {
   sugerencias?: string[];
 }
 
-export interface RespuestaJarvis extends Omit<Borrador, 'claves' | 'reescribir' | 'entidades' | 'propuesta'> {
+export interface RespuestaJarvis extends Omit<Borrador, 'claves' | 'reescribir' | 'entidades' | 'propuesta' | 'sinDatos'> {
   intencion: Intencion;
   motor: string;
   latenciaMs: number;
@@ -65,6 +72,9 @@ interface Ctx {
 }
 
 const NO_ENTIENDO = 'Puedo ayudarte con promociones, eventos, tiendas, precios, tiempos de preparación, tu pedido, tus puntos o cómo llegar a cualquier lugar del Paseo.';
+const SUGERENCIAS_BASE = ['¿Qué promociones hay ahora?', '¿Qué eventos hay hoy?', '¿Qué me recomiendas?'];
+/** Palabras de promociones: no son lo que se filtra («descuentos para estudiantes» → «estudiantes»). */
+const VOCABULARIO_PROMO = new Set(['promo', 'promocion', 'oferta', 'descuento', 'rebaja', 'liquidacion', '2x1', 'especial', 'puntos', 'punto', 'doble', 'dobles'].map(raiz));
 
 /**
  * Jarvis conversacional (HU-C21, HU-Y12). Entiende la frase con reglas y con el índice de nombres
@@ -143,35 +153,37 @@ export class JarvisService {
         ctx.mem = { ...ctx.mem, ...p.entidades };
       } else intencion = 'gracias';
     }
-    if (intencion === 'desconocida') intencion = await this.clasificarConModelo(ctx);
+    if (intencion === 'desconocida') intencion = JarvisService.hayEvidencia(ctx.ent) ? 'buscar' : await this.clasificarConModelo(ctx);
 
     let b: Borrador;
     try {
       b = await this.manejar(intencion, ctx);
     } catch (e: any) {
-      b = { texto: `Tuve un problema para consultar eso. ${NO_ENTIENDO}`, reescribir: false };
+      b = { texto: `No pude consultar ese dato en este momento. ${NO_ENTIENDO}`, reescribir: false };
     }
+    if (b.sinDatos) await this.saber.registrarSinResultado(recintoId, clienteId, b.sinDatos);
 
-    // El modelo local vuelve natural el borrador, con el hilo de la conversación
+    // El modelo local solo vuelve natural un borrador que ya tiene los datos; si cambia algo, se usa el borrador
     let texto = b.texto;
     let motor = 'plantilla';
-    if (b.reescribir !== false && intencion !== 'libre') {
+    if (b.reescribir !== false && !b.sinDatos) {
       const r = await this.cerebro.redactar(b.texto, [], b.claves ?? [], { historial: MemoriaJarvis.paraPrompt(hilo), pregunta: original });
       texto = r.texto;
       motor = r.motor;
-    } else if (intencion === 'libre') motor = (b as any).motor ?? 'plantilla';
+    }
+    const guardada: string = b.sinDatos ? 'sin_datos' : intencion;
 
     if (clienteId) {
       const delCliente: Entidades = {
         localId: ent.locales[0]?.id, productoId: ent.productos.length === 1 ? ent.productos[0].id : undefined, actividadId: ent.actividad?.id,
         servicioTipo: ent.servicio?.tipo, categoria: ent.categoria ?? undefined, ...entidadesPedidas,
       };
-      await this.memoria.guardar(clienteId, 'cliente', original, intencion, delCliente);
-      await this.memoria.guardar(clienteId, 'jarvis', texto, intencion, b.entidades ?? {}, {
-        propuesta: b.propuesta ?? null, ruta: b.ruta ? { metros: b.ruta.metros, destino: b.ruta.destino } : null, motor,
+      await this.memoria.guardar(clienteId, 'cliente', original, guardada, delCliente);
+      await this.memoria.guardar(clienteId, 'jarvis', texto, guardada, b.entidades ?? {}, {
+        propuesta: b.propuesta ?? null, ruta: b.ruta ? { metros: b.ruta.metros, destino: b.ruta.destino } : null, motor, tema: b.sinDatos ?? null,
       });
     }
-    const { claves: _c, reescribir: _r, entidades: _e, propuesta: _p, ...resto } = b;
+    const { claves: _c, reescribir: _r, entidades: _e, propuesta: _p, sinDatos: _s, ...resto } = b;
     return { intencion, ...resto, texto, motor, latenciaMs: Date.now() - t0 };
   }
 
@@ -188,6 +200,10 @@ export class JarvisService {
     if (palabras <= 6 && r(/^(gracias|muchas gracias|mil gracias|genial|excelente|perfecto gracias|ok gracias|listo|no gracias|nada mas|chau|chao|adios|hasta luego|nos vemos)\b/)) return 'gracias';
     if (r(/(olvida (todo|eso)|empecemos de nuevo|nueva conversacion|borra (la|esta) conversacion)/)) return 'reinicio';
     if (r(/(quien eres|que eres|que puedes hacer|que sabes hacer|en que me (puedes )?ayudar|como funcionas|para que sirves|^ayuda$|que es paseo points|como funciona (paseo points|el programa|los puntos)|como funcionan los puntos)/)) return 'ayuda';
+    // Fuera del Paseo: Jarvis no responde de memoria (clima, noticias, cultura general, chistes)
+    if (r(/\b(clima|que tiempo hace|va a llover|llovera|temperatura|pronostico|capital de|presidente|quien gano|el partido|noticias|chiste|chistes|receta de|traduce|traduceme|tipo de cambio|cotizacion del dolar|horoscopo|cuanto es \d)/)) return 'fuera_de_tema';
+    if (r(/\bcuant[oa]s (locales|tiendas|restaurantes|negocios|marcas|lugares|pisos|niveles)\b/)) return 'conteo';
+    if (r(/\b(pelicula|peliculas|cartelera|estrenos?|que dan en el cine|funciones del cine|horarios? del cine)\b/)) return 'cartelera';
 
     // pedidos PaseoYa
     const habla = (re: RegExp) => r(re);
@@ -213,15 +229,25 @@ export class JarvisService {
     if (habla(/(promo|oferta|descuento|2x1|dos por uno|rebaja|liquidacion)/) && !habla(/(cerca de mi|por aqui|aqui cerca)/)) return 'promociones';
     if (ent.actividad || habla(/\b(evento|eventos|concierto|conciertos|feria|ferias|taller|talleres|show|shows|espectaculo|actividad|actividades|que hacer|presentacion)\b/) || habla(/que (hay|hacer|planes)( para)? (hoy|manana|esta noche|esta tarde|(este |el )?fin de semana|el sabado|el domingo)/)) return 'eventos';
     if (habla(/(parqueo|estacionamiento|parking|estacionar|mi auto|mi carro|mi vehiculo)/)) return 'parqueo';
+    // Información general del Paseo (medios de pago, devoluciones…) cargada por la administración
+    if (ent.ev.infoFuerte || (ent.ev.info.length && !ent.ev.productos.length && !ent.locales.length)) return 'info';
+    // Días de atención: «¿abren los domingos?», «¿qué días atiende Napoli?»
+    if (habla(/\b(abre|abren|atiende|atienden|abierto|abierta|abiertos|trabajan)\b.*\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado|feriado)s?\b/) || habla(/\b(que dias|dias de atencion)\b/)) return 'horario';
+    // Un servicio nombrado («¿cuánto cuesta el casillero?», «¿a qué hora abre la enfermería?») se responde con el servicio
+    if (ent.servicio && !ent.locales.length && !ent.ev.productos.length) return 'servicio';
+    if (ent.ev.vertical && !ent.locales.length) return 'zona';
     if (habla(/(cuanto (tarda|demora|se tarda|se demora)|tiempo de preparacion|en cuanto tiempo|cuanto tiempo)/)) return 'tiempo';
     if (habla(/(a que hora (abre|abren|cierra|cierran)|horario|esta abiert|estan abiert|sigue abiert|atiende|atienden|hasta que hora|cierra |cierran )/)) return 'horario';
     if (habla(/(cuanto (cuesta|cuestan|vale|valen|sale|salen|esta|estan)|precio|a cuanto|mas barat|mas economic)/)) return 'precio';
     if (ent.servicio && !ent.locales.length) return 'servicio';
     if (habla(/((que hay|algo|ofertas?).*(cerca|por aqui|aqui)|cerca de mi|por aqui cerca)/)) return 'cerca';
+    if (ent.ev.zonas.length && !ent.locales.length && !ent.ev.localesNombre.length && !ent.ev.productos.length) return 'zona';
     if (habla(/(donde (esta|estan|queda|quedan|encuentro|hay|puedo|venden)|como llego|como voy|llevame|quiero ir|ir a\b|ruta|camino (a|al|hacia))/)) return 'donde';
-    if (habla(/(tengo hambre|que (me )?recomiendas|que como|que puedo comer|algo (dulce|rico|para comer|de comer)|recomienda|sugerencia|antojo|regalo para|que le regalo|aburrido|que hago|que me sugieres|tengo sed)/)) return 'recomendacion';
+    if (habla(/(tengo hambre|que (me )?recomiendas|que como|que puedo comer|quiero comer|ganas de comer|algo (dulce|rico|barato|economico|para comer|de comer)|donde como|recomienda|sugerencia|antojo|regalo para|que le regalo|aburrido|que hago|que me sugieres|tengo sed)/)) return 'recomendacion';
     if (habla(/(que venden|que tiene|que hay en|informacion de|telefono|numero de|de que es|que es)/) && ent.locales.length) return 'local_info';
-    if (habla(/\b(busca|buscame|encuentra|quiero comprar|necesito|venden|tienen|vende)\b/)) return 'producto';
+    // «¿Hay…?», «¿tienen…?», «quiero un café», «necesito pilas»: buscar con evidencia y decir si no existe
+    if (habla(/^(hay|habra|tienen|tiene|tendran|venden|vende|existe|existen|busco|buscame|busca|encuentra|necesito|quiero|quisiera|me gustaria|donde (compro|consigo)|en que (tienda|local) (venden|hay|tienen|encuentro|compro))\b/)
+      || habla(/\b(hay|tienen|venden) (algun|alguna|un|una|unos|unas)\b/) || habla(/\b(quiero comprar|necesito comprar)\b/)) return 'buscar';
 
     // «¿Y la óptica?», «¿y en Napoli?»: misma pregunta que la anterior, sobre otra cosa
     const anterior = [...c.hilo].reverse().find((x) => x.rol === 'cliente')?.intencion as Intencion | undefined;
@@ -229,11 +255,11 @@ export class JarvisService {
       if (ent.locales.length || ent.productos.length || ent.servicio) return ent.servicio && !ent.locales.length ? 'servicio' : anterior === 'servicio' ? 'donde' : anterior;
     }
 
-    // Solo entidades: «Napoli», «salteñas», «el baño»
+    // Solo entidades: «Napoli», «salteñas», «el baño», «tiendas de ropa»
     if (ent.productos.length) return 'producto';
     if (ent.locales.length) return 'local_info';
     if (ent.servicio) return 'servicio';
-    if (ent.categoria) return 'recomendacion';
+    if (ent.categoria || ent.ev.localesRubro.length) return 'buscar';
 
     // Seguimiento corto: «¿y ahí?», «¿y cómo llego?», «¿y el otro?»
     if (palabras <= 6 && (mem.localId || mem.productoId || mem.servicioTipo || mem.actividadId)) {
@@ -245,12 +271,24 @@ export class JarvisService {
     return 'desconocida';
   }
 
+  /** ¿La frase nombra algo que existe en los datos del Paseo? */
+  private static hayEvidencia(e: Encontrado) {
+    const v = e.ev;
+    return !!(e.locales.length || e.productos.length || e.servicio || e.categoria || v.servicios.length || v.info.length || v.zonas.length || v.vertical
+      || v.localesNombre.length || v.localesRubro.length || v.productos.length || v.productosRelacionados.length);
+  }
+
+  /**
+   * Sin reglas ni evidencia: el modelo local solo elige entre intenciones que consultan datos.
+   * Si duda, «libre», que responde con honestidad que no tiene ese dato.
+   */
   private async clasificarConModelo(c: Ctx): Promise<Intencion> {
     const j = await this.cerebro.json<{ intencion: Intencion }>(
       `Clasifica lo que dice un cliente de un centro comercial. Responde solo JSON {"intencion":"..."} con una de: ${CLASIFICABLES.join(', ')}.
-promociones = ofertas o descuentos; eventos = actividades o shows; precio = cuánto cuesta algo; producto = buscar algo para comprar; donde = cómo llegar a un lugar;
-servicio = baños, cajeros automáticos, wifi, lactancia, enfermería, objetos perdidos; horario = a qué hora abre o cierra; tiempo = cuánto tarda la comida;
-recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Paseo.`,
+saldo = cuántos puntos tiene; nivel = su nivel del programa; canjes = qué puede canjear; vencimiento = cuándo vencen sus puntos; movimientos = sus últimas compras o puntos;
+oportunidades = dónde ganar más puntos; promociones = ofertas o descuentos del Paseo; ofertas = sus ofertas personales; eventos = actividades o shows;
+misiones = sus retos; drops = ofertas relámpago; parqueo = estacionamiento; recomendacion = qué le recomiendas comer, comprar o hacer;
+pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás seguro.`,
       `${MemoriaJarvis.paraPrompt(c.hilo, 4)}\nCliente: ${c.original}`,
     );
     return j && CLASIFICABLES.includes(j.intencion) ? j.intencion : 'libre';
@@ -310,6 +348,12 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       pedido_donde: (c) => this.pedidoDonde(c),
       espera: (c) => this.espera(c),
       cerca: (c) => this.cerca(c),
+      buscar: (c) => this.buscarTema(c),
+      info: (c) => this.info(c),
+      zona: (c) => this.zona(c),
+      conteo: (c) => this.conteo(c),
+      cartelera: (c) => this.cartelera(c),
+      fuera_de_tema: async (c) => this.fueraDeTema(c),
       libre: (c) => this.libre(c),
       desconocida: (c) => this.libre(c),
     };
@@ -334,6 +378,11 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   private static ubicacion(l: { piso: string; numero_local: string }) {
     return `${enPiso(l.piso).replace(/^en /, '')}, local ${l.numero_local}`;
+  }
+
+  /** «Nivel 1, local 112», «Terrazas, local T01» (para listas entre paréntesis). */
+  private static ubicacionCorta(l: { piso: string; numero_local: string }) {
+    return `${l.piso === 'T' ? 'Terrazas' : NOMBRE_PISO[l.piso]}, local ${l.numero_local}`;
   }
 
   // ------------------------------------------------------------------ saludo
@@ -453,15 +502,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     }
     const promos = (await this.saber.promociones(c.recintoId, c.clienteId)).filter((p) => p.ahora && p.tipo === 'puntos_dobles');
     if (promos.length) partes.push(`Ahora hay puntos multiplicados en ${lista(promos.slice(0, 3).map((p) => `${p.local ?? 'todo el Paseo'} (por ${Number(p.multiplicador)})`))}.`);
-    let ar: Borrador['ar'];
-    let ruta: Ruta | undefined;
     if (c.clienteId) {
-      const monedas = await this.saber.monedasPendientes(c.recintoId, c.clienteId);
-      if (monedas.length) {
-        partes.push(`Te quedan ${monedas.length} monedas de hoy en los carteles del Paseo, de ${monedas[0].puntos} puntos cada una.`);
-        ar = { tipo: 'moneda', codigo: `PPH:${monedas[0].codigo}`, lugar: monedas[0].zona };
-        ruta = (await this.rutaHasta(c, `hito:${monedas[0].id}`)).ruta;
-      }
       const mis = await many<any>(
         this.db,
         `select m.nombre, m.meta, m.recompensa_puntos, coalesce(p.avance, 0) as avance from mision m left join progreso_mision p on p.mision_id = m.id and p.cliente_id = $2
@@ -474,7 +515,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const ev = (await this.saber.eventos(c.recintoId, new Date(), finDelDia())).find((e) => e.puntos > 0);
     if (ev) partes.push(`Además, si vas a ${ev.titulo} ${ev.en_curso ? 'ahora' : `a ${horaVoz(hhmmBo(ev.inicio))}`} ganas ${ev.puntos} puntos.`);
     if (!partes.length) partes.push('Ahora no hay promociones de puntos dobles, pero cada compra suma y la primera visita del día te da puntos.');
-    return { texto: partes.join(' '), reescribir: false, ar, ruta, acciones: [{ etiqueta: 'Ver misiones', ruta: '/misiones' }] };
+    return { texto: partes.join(' '), reescribir: false, acciones: [{ etiqueta: 'Ver misiones', ruta: '/misiones' }] };
   }
 
   // ------------------------------------------------------------------ promociones, eventos, drops, misiones
@@ -482,7 +523,25 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   private async promociones(c: Ctx): Promise<Borrador> {
     const local = c.ent.locales[0] ?? (/\b(ahi|ese|esa|alli)\b/.test(c.t) && c.mem.localId ? { id: c.mem.localId, nombre: '' } : null);
     const categoria = !local ? c.ent.categoria : null;
-    const todas = await this.saber.promociones(c.recintoId, c.clienteId, { localId: local?.id, categoria: categoria ?? undefined });
+    let todas = await this.saber.promociones(c.recintoId, c.clienteId, { localId: local?.id, categoria: categoria ?? undefined });
+    // «descuentos para estudiantes», «2x1 en pizza»: lo que pide y no es una palabra de promociones
+    const pide = c.ent.ev.faltantes.filter((w) => !VOCABULARIO_PROMO.has(w));
+    if (pide.length && !local) {
+      const texto = (p: any) => norm(`${p.titulo} ${p.descripcion ?? ''}`).split(' ').map(raiz);
+      const conEso = todas.filter((p) => pide.some((w) => texto(p).includes(w)));
+      const que = pide.map((w) => comoLaDijo(c.original, w)).join(' ');
+      if (!conEso.length) {
+        const ahora = todas.filter((p) => p.ahora);
+        return {
+          texto: `No hay promociones especiales para «${que}» registradas en el Paseo.${ahora.length ? ` Las que hay ahora para todos son ${lista(ahora.slice(0, 3).map((p) => `${p.titulo}${p.local ? ` en ${p.local}` : ''}`))}${ahora.length > 3 ? `, y ${ahora.length - 3} más en la app` : ''}.` : ''}`,
+          reescribir: false,
+          sinDatos: `promoción: ${que}`,
+          promociones: ahora.slice(0, 6),
+          sugerencias: ['¿Dónde gano más puntos?', '¿Qué ofertas tengo hoy?'],
+        };
+      }
+      todas = conEso;
+    }
     // Primero lo que le interesa y lo que equilibra el flujo, no siempre los mismos locales
     const ahora = await this.recomendador.ordenar(c.recintoId, c.clienteId, todas.filter((p) => p.ahora));
     const luego = todas.filter((p) => p.mas_tarde_hoy);
@@ -569,15 +628,16 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   }
 
   private async drops(c: Ctx): Promise<Borrador> {
-    const ds = await this.saber.dropsActivos(c.recintoId);
-    if (!ds.length) return { texto: 'Ahora no hay Drops activos. Cuando se abra uno cerca de ti, te aviso al instante.', reescribir: false };
+    const ds = (await this.saber.dropsActivos(c.recintoId)).filter((d) => d.quedan > 0);
+    if (!ds.length) return { texto: 'Ahora no hay Drops activos. Cuando se abra uno, te aviso al instante.', reescribir: false };
     const d = ds[0];
-    const { ruta } = d.hito_id ? await this.rutaHasta(c, `hito:${d.hito_id}`) : { ruta: undefined };
+    const { ruta } = await this.rutaHasta(c, `local:${d.local_id}`);
     return {
-      texto: `Hay ${ds.length === 1 ? 'un Drop activo' : `${ds.length} Drops activos`}. ${d.producto} de ${d.local} a ${dinero(d.precio_especial)} en vez de ${dinero(d.precio_bs)}, en el cartel ${de(lugar(d.zona))} (${NOMBRE_PISO[d.piso]}); quedan ${d.quedan} y termina a ${horaVoz(hhmmBo(d.fin))}.${ruta ? ` Estás a ${ruta.metros} metros.` : ''}`,
+      texto: `Hay ${ds.length === 1 ? 'un Drop activo' : `${ds.length} Drops activos`}. ${d.producto} de ${d.local} a ${dinero(d.precio_especial)} en vez de ${dinero(d.precio_bs)}; quedan ${d.quedan} y termina ${diaVoz(d.fin) === 'hoy' ? '' : `${diaVoz(d.fin)} `}a ${horaVoz(hhmmBo(d.fin))}. Lo reclamas desde la app, en Drops, estando en el Paseo.${ruta && ruta.metros >= 10 ? ` ${d.local} está a ${ruta.metros} metros.` : ''}`,
       reescribir: false,
       ruta,
-      ar: d.codigo ? { tipo: 'drop', codigo: `PPH:${d.codigo}`, lugar: d.zona } : undefined,
+      entidades: { localId: d.local_id },
+      acciones: [{ etiqueta: 'Ver Drops', ruta: '/drops' }],
     };
   }
 
@@ -617,8 +677,17 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   private async horario(c: Ctx): Promise<Borrador> {
     const id = await this.localObjetivo(c);
+    const dia = DIAS_SEMANA.findIndex((d) => new RegExp(`\\b${d}s?\\b`).test(c.t));
     if (id && !/\b(paseo|centro comercial|mall)\b/.test(c.t)) {
       const l = await this.saber.local(id);
+      if (l && dia >= 0) {
+        const atiende = (l.dias_atencion ?? [0, 1, 2, 3, 4, 5, 6]).includes(dia);
+        return {
+          texto: atiende ? `Sí, ${l.nombre} atiende los ${DIAS_PLURAL[dia]}, de ${horaVoz(l.apertura)} a ${horaVoz(l.cierre)}.` : `No, ${l.nombre} no atiende los ${DIAS_PLURAL[dia]}.`,
+          reescribir: false,
+          entidades: { localId: l.id },
+        };
+      }
       if (l) {
         const estado = !l.activo
           ? 'pero por ahora no está atendiendo'
@@ -640,6 +709,13 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
        from local l join categoria c on c.id = l.categoria_id where l.recinto_id = $1 and l.activo`,
       [c.recintoId],
     );
+    if (dia >= 0) {
+      const cerrados = await this.saber.cerradosElDia(c.recintoId, dia);
+      return {
+        texto: `Sí, el Paseo abre todos los días, también los ${DIAS_PLURAL[dia]}, de ${horaVoz(h.abre)} a ${horaVoz(h.cierra)}.${cerrados.length ? ` Ojo: ${lista(cerrados.map((x) => x.nombre))} no ${cerrados.length === 1 ? 'atiende' : 'atienden'} los ${DIAS_PLURAL[dia]}.` : ''}`,
+        reescribir: false,
+      };
+    }
     return {
       texto: `El Paseo abre todos los días de ${horaVoz(h.abre)} a ${horaVoz(h.cierra)}. Las tiendas atienden de ${horaVoz(h.tiendas_abre)} a ${horaVoz(h.tiendas_cierra)} y el patio de comidas hasta ${horaVoz(h.comida_cierra)}.`,
       reescribir: false,
@@ -655,6 +731,9 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const promo = l.promos.find((p: any) => p.ahora) ?? l.promos[0];
     const prod = l.productos[0];
     const partes = [`${l.nombre} está en ${JarvisService.ubicacion(l)}: ${l.descripcion.charAt(0).toLowerCase() + l.descripcion.slice(1)}. ${estado.charAt(0).toUpperCase() + estado.slice(1)}.`];
+    // «¿Hay farmacia de turno?»: lo que pide además del local y no está en los datos
+    const condicion = JarvisService.condicionSinDatos(c);
+    if (condicion) partes.unshift(`No tengo información sobre «${condicion}».`);
     if (promo) partes.push(`${promo.ahora ? 'Tiene activa' : 'Hoy tiene'} ${promo.titulo}${promo.ahora ? '' : ` desde ${horaVoz(promo.hora_inicio)}`}.`);
     if (prod) partes.push(`Por ejemplo, ${prod.nombre} a ${dinero(prod.precio_bs)}.`);
     if (/telefono|numero|llamar/.test(c.t)) partes.push(l.telefono ? `Su teléfono es ${l.telefono.split('').join(' ')}.` : 'No tengo registrado su teléfono.');
@@ -677,7 +756,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       const termino = c.t.replace(/.*(donde (esta|estan|queda|quedan|encuentro|hay|puedo|venden)|como llego a|como voy a|llevame a|quiero ir a|ir a|ruta a|camino (a|al|hacia))\s*/, '').replace(/^(el|la|los|las|un|una|al|a)\s+/, '');
       const porTermino = termino ? await this.saber.localesPorTermino(c.recintoId, termino) : [];
       if (porTermino.length) localId = porTermino[0].id;
-      else if (termino && termino.length > 2 && !c.mem.localId) return this.producto({ ...c, t: termino });
+      else if (termino && termino.length > 2 && !c.mem.localId) return this.buscarTema(c);
     }
     if (!localId && c.ent.actividad) {
       const a = await this.saber.actividad(c.ent.actividad.id);
@@ -705,8 +784,12 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   private async servicio(c: Ctx): Promise<Borrador> {
     const tipo = c.ent.servicio?.tipo ?? c.mem.servicioTipo;
     if (!tipo) return this.libre(c);
-    const lista_ = await this.saber.servicios(c.recintoId, tipo);
+    let lista_ = await this.saber.servicios(c.recintoId, tipo);
     if (!lista_.length) return this.libre(c);
+    // «el cajero del Banco Unión»: si nombró uno en particular, ese y no el más cercano
+    const coinciden = (s: any) => raicesDe(s.nombre).filter((r) => c.ent.ev.palabras.includes(r)).length;
+    const max = Math.max(...lista_.map(coinciden));
+    if (max > Math.min(...lista_.map(coinciden))) lista_ = lista_.filter((s) => coinciden(s) === max);
     // El más cercano caminando
     let mejor: { s: any; ruta?: Ruta } = { s: lista_[0] };
     for (const s of lista_) {
@@ -727,7 +810,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const frase =
       tipo === 'objetos_perdidos'
         ? `Lo siento. ${s.descripcion} Está ${donde}`
-        : `${etiqueta.charAt(0).toUpperCase() + etiqueta.slice(1)} está ${donde}${/[.!?]$/.test(donde) ? '' : '.'} ${s.descripcion}`;
+        : `${etiqueta.charAt(0).toUpperCase() + etiqueta.slice(1)} ${/^(los|las) /.test(etiqueta) ? 'están' : 'está'} ${donde}${/[.!?]$/.test(donde) ? '' : '.'} ${s.descripcion}`;
     return {
       texto: `${frase.trim()}${horario}`.replace(/\.\./g, '.').replace(/([^.!?])$/, '$1.'),
       reescribir: false,
@@ -739,25 +822,34 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   // ------------------------------------------------------------------ productos, precios, tiempos
 
-  /** Productos de lo que nombró; si no nombró nada, del local o producto del que se venía hablando. */
+  /**
+   * Productos de lo que nombró; si no nombró nada, del producto o local del que se venía hablando.
+   * Nunca devuelve productos de otra cosa: si nombró algo que no existe, devuelve vacío.
+   */
   private async productosObjetivo(c: Ctx) {
-    if (c.ent.productos.length) {
-      const deLocal = c.ent.locales[0] ? c.ent.productos.filter((p) => p.local_id === c.ent.locales[0].id) : [];
-      return this.saber.productos((deLocal.length ? deLocal : c.ent.productos).map((p) => p.id));
+    const ev = c.ent.ev;
+    // Primero lo que coincide palabra por palabra; si no hay, lo reconocido con tolerancia a errores de voz
+    const nombrados = ev.productos.length ? ev.productos.map((p) => p.id) : c.ent.productos.map((p) => p.id);
+    if (nombrados.length) {
+      const ps = await this.saber.productos(nombrados.slice(0, 12));
+      const deLocal = c.ent.locales[0] ? ps.filter((p: any) => p.local_id === c.ent.locales[0].id) : [];
+      return deLocal.length ? deLocal : ps;
     }
+    const nombroAlgo = ev.faltantes.length > 0 || ev.productosRelacionados.length > 0;
+    if (nombroAlgo && !c.ent.locales.length) return [];
     if (c.mem.productoId && !c.ent.locales.length) return this.saber.productos([c.mem.productoId]);
-    const termino = c.t
-      .replace(/.*(cuanto (cuesta|cuestan|vale|valen|sale|salen|esta|estan)|precio de|a cuanto|cuanto (tarda|demora|se tarda)|busca(me)?|encuentra|quiero comprar|necesito|venden|tienen|vende)\s*/, '')
-      .replace(/^(el|la|los|las|un|una|unos|unas)\s+/, '')
-      .replace(/\b(mas barat[oa]s?|mas economic[oa]s?|aqui|en el paseo)\b/g, '')
-      .trim();
-    if (termino.length >= 3 && !c.ent.locales.length) {
-      const encontrados = await this.paseoya.buscarDesdeJarvis(c.recintoId, termino, c.clienteId);
-      if (encontrados.length) return this.saber.productos(encontrados.slice(0, 8).map((p: any) => p.id));
+    const localId = c.ent.locales[0]?.id ?? (!nombroAlgo ? c.mem.localId : undefined);
+    if (localId) {
+      const l = await this.saber.local(localId);
+      return l ? this.saber.productos(l.productos.map((p: any) => p.id)) : [];
     }
-    const localId = c.ent.locales[0]?.id ?? c.mem.localId;
-    if (localId) return (await this.saber.local(localId))?.productos.map((p: any) => ({ ...p, local: c.ent.locales[0]?.nombre ?? '' })) ?? [];
     return [];
+  }
+
+  /** «No encontré «nike» específicamente.»: lo que pidió y no está en los datos. */
+  private static nota(c: Ctx) {
+    const f = c.ent.ev.faltantes;
+    return f.length ? `No encontré «${f.map((w) => comoLaDijo(c.original, w)).join(' ')}» específicamente; lo más parecido: ` : '';
   }
 
   private static tarjetas(ps: any[]) {
@@ -766,26 +858,32 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   private async precio(c: Ctx): Promise<Borrador> {
     const ps = await this.productosObjetivo(c);
-    if (!ps.length) return { texto: '¿De qué producto quieres saber el precio? Por ejemplo, «¿cuánto cuesta la pizza familiar?».', reescribir: false };
+    if (!ps.length) {
+      if (c.ent.ev.palabras.length) return this.buscarTema(c, 'precio');
+      return { texto: '¿De qué producto quieres saber el precio? Por ejemplo, «¿cuánto cuesta la pizza familiar?».', reescribir: false };
+    }
+    const nota = JarvisService.nota(c);
     if (ps.length === 1) {
       const p = ps[0];
       const stock = p.stock === 0 ? ' Ahora está agotado.' : p.stock <= 5 ? ` Quedan solo ${p.stock}.` : '';
       const drop = (await this.saber.dropsActivos(c.recintoId)).find((d) => d.producto_id === p.id && d.quedan > 0);
-      const oferta = drop ? ` Pero ahora hay un Drop: lo consigues a ${dinero(drop.precio_especial)} en el cartel ${de(lugar(drop.zona))} hasta ${horaVoz(hhmmBo(drop.fin))}.` : '';
+      const oferta = drop ? ` Pero ahora hay un Drop: lo consigues a ${dinero(drop.precio_especial)} hasta ${horaVoz(hhmmBo(drop.fin))}; reclámalo en la app, en Drops.` : '';
       return {
-        texto: `${p.nombre} cuesta ${dinero(p.precio_bs)}${p.local ? ` en ${p.local}` : ''}.${stock}${oferta} ¿Quieres pedirlo por PaseoYa o que te lleve al local?`,
-        ar: drop?.codigo ? { tipo: 'drop', codigo: `PPH:${drop.codigo}`, lugar: drop.zona } : undefined,
+        texto: `${nota}${p.nombre} cuesta ${dinero(p.precio_bs)}${p.local ? ` en ${p.local}` : ''}.${stock}${oferta} ¿Quieres pedirlo por PaseoYa o que te lleve al local?`,
         claves: p.local ? [p.local] : [],
         reescribir: false,
         entidades: { productoId: p.id, localId: p.local_id },
         propuesta: { intencion: 'donde', entidades: { localId: p.local_id } },
         productos: JarvisService.tarjetas(ps),
+        acciones: drop ? [{ etiqueta: 'Ver Drops', ruta: '/drops' }] : undefined,
       };
     }
     const orden = [...ps].sort((a, b) => Number(a.precio_bs) - Number(b.precio_bs));
     const top = orden.slice(0, 3).map((p) => `${p.nombre} a ${dinero(p.precio_bs)}${p.local ? ` en ${p.local}` : ''}`);
     return {
-      texto: `Encontré ${ps.length} opciones. ${/barat|economic/.test(c.t) ? 'La más barata es' : 'Van desde'} ${top[0]}${top.length > 1 ? `; también ${lista(top.slice(1))}` : ''}.`,
+      texto: nota
+        ? `${nota}${top[0]}${top.length > 1 ? `; también ${lista(top.slice(1))}` : ''}.`
+        : `Encontré ${ps.length} opciones. ${/barat|economic/.test(c.t) ? 'La más barata es' : 'Van desde'} ${top[0]}${top.length > 1 ? `; también ${lista(top.slice(1))}` : ''}.`,
       reescribir: false,
       entidades: { productoId: orden[0].id, localId: orden[0].local_id },
       propuesta: { intencion: 'donde', entidades: { localId: orden[0].local_id } },
@@ -795,20 +893,15 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
 
   private async producto(c: Ctx): Promise<Borrador> {
     const ps = await this.productosObjetivo(c);
-    if (!ps.length) {
-      const termino = c.t.replace(/^(busca(me)?|encuentra|quiero comprar|necesito|venden|tienen|vende|donde (hay|venden|compro))\s+/, '').trim();
-      const locs = termino ? await this.saber.localesPorTermino(c.recintoId, termino) : [];
-      if (locs.length) return this.localInfo({ ...c, ent: { ...c.ent, locales: locs } });
-      return {
-        texto: `No encontré «${termino || c.original}» en el Paseo. Lo anoté para que la administración sepa que hace falta. ¿Te ayudo a buscar algo parecido?`,
-        reescribir: false,
-      };
-    }
+    if (!ps.length) return this.buscarTema(c);
     const orden = [...ps].sort((a, b) => Number(a.precio_bs) - Number(b.precio_bs));
     const p = orden[0];
     const locales = [...new Set(orden.map((x) => x.local))];
+    const nota = JarvisService.nota(c);
     return {
-      texto: `${ps.length === 1 ? `Sí, ${p.local} tiene ${p.nombre}` : `Hay ${ps.length} opciones en ${locales.length === 1 ? locales[0] : `${locales.length} locales`}; la más barata es ${p.nombre} en ${p.local}`} a ${dinero(p.precio_bs)}, en ${JarvisService.ubicacion(p)}. ¿Te llevo o prefieres pedirlo por PaseoYa?`,
+      texto: nota
+        ? `${nota}${p.nombre} en ${p.local}, a ${dinero(p.precio_bs)}, en ${JarvisService.ubicacion(p)}.${orden.length > 1 ? ` También ${lista(orden.slice(1, 3).map((x) => `${x.nombre} en ${x.local} a ${dinero(x.precio_bs)}`))}.` : ''} ¿Te llevo?`
+        : `${ps.length === 1 ? `Sí, ${p.local} tiene ${p.nombre}` : `Hay ${ps.length} opciones en ${locales.length === 1 ? locales[0] : `${locales.length} locales`}; la más barata es ${p.nombre} en ${p.local}`} a ${dinero(p.precio_bs)}, en ${JarvisService.ubicacion(p)}. ¿Te llevo o prefieres pedirlo por PaseoYa?`,
       reescribir: false,
       entidades: { productoId: p.id, localId: p.local_id },
       propuesta: { intencion: 'donde', entidades: { localId: p.local_id } },
@@ -822,9 +915,9 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const ps = await this.productosObjetivo(c);
     const conTiempo = ps.filter((p: any) => p.tiempo_preparacion_min != null);
     if (!conTiempo.length) {
-      return ps.length
-        ? { texto: `${ps[0].nombre} se entrega al momento en ${ps[0].local}; no necesita preparación.`, reescribir: false, entidades: { productoId: ps[0].id } }
-        : { texto: '¿De qué producto quieres saber el tiempo de preparación?', reescribir: false };
+      if (ps.length) return { texto: `${ps[0].nombre} se entrega al momento en ${ps[0].local}; no necesita preparación.`, reescribir: false, entidades: { productoId: ps[0].id } };
+      if (c.ent.ev.palabras.length) return this.buscarTema(c);
+      return { texto: '¿De qué producto quieres saber el tiempo de preparación?', reescribir: false };
     }
     const p = conTiempo[0];
     const extra = conTiempo.length > 1 ? ` ${conTiempo[1].nombre} tarda unos ${conTiempo[1].tiempo_preparacion_min} minutos.` : '';
@@ -838,7 +931,30 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   }
 
   private async recomendacion(c: Ctx): Promise<Borrador> {
-    const quiere = /(hambre|comer|comida|almorz|cenar|desayun|antojo|dulce|postre|sed|beber|tomar)/.test(c.t) ? 'Comida' : /(regalo|regalar|cumple)/.test(c.t) ? 'Regalos' : /(aburrid|que hago|diversion|divertir|jugar)/.test(c.t) ? 'Entretenimiento' : c.ent.categoria;
+    const quiere = /(hambre|comer|comida|almorz|cenar|desayun|antojo|dulce|postre|sed|beber|tomar|donde como|como algo)/.test(c.t) ? 'Comida' : /(regalo|regalar|cumple)/.test(c.t) ? 'Regalos' : /(aburrid|que hago|diversion|divertir|jugar)/.test(c.t) ? 'Entretenimiento' : c.ent.categoria;
+    // «comida vegana», «ropa de marca X»: una condición pegada a lo que busca que no está en los datos
+    const condicion = JarvisService.condicionSinDatos(c);
+    if (condicion) {
+      return {
+        texto: `No tengo opciones «${condicion}» registradas en el Paseo, así que no te puedo recomendar una con seguridad. Si quieres, te digo qué ${quiere === 'Comida' ? 'restaurantes' : 'locales'} hay o te recomiendo según lo que te gusta.`,
+        reescribir: false,
+        sinDatos: condicion,
+        sugerencias: [quiere === 'Comida' ? '¿Qué restaurantes hay?' : '¿Qué tiendas hay?', '¿Qué me recomiendas?'],
+      };
+    }
+    // «algo barato»: lo más económico del rubro, con datos
+    if (/\b(barat[oa]s?|economic[oa]s?)\b/.test(c.t)) {
+      const ps = await this.saber.masBaratos(c.recintoId, quiere ?? null, 3);
+      if (ps.length) {
+        return {
+          texto: `Lo más económico ${quiere === 'Comida' ? 'para comer ' : ''}ahora: ${lista(ps.map((p: any) => `${p.nombre} en ${p.local} a ${dinero(p.precio_bs)}`))}. ¿Te llevo a ${ps[0].local}?`,
+          reescribir: false,
+          entidades: { localId: ps[0].local_id, productoId: ps[0].id },
+          propuesta: { intencion: 'donde', entidades: { localId: ps[0].local_id } },
+          productos: JarvisService.tarjetas(ps),
+        };
+      }
+    }
     if (quiere === 'Entretenimiento' || (!quiere && /(que hago|aburrid)/.test(c.t))) {
       const ev = (await this.saber.eventos(c.recintoId, new Date(), finDelDia()))[0];
       if (ev) return { texto: `${ev.en_curso ? 'Ahora mismo hay' : `Hoy a ${horaVoz(hhmmBo(ev.inicio))} hay`} ${ev.titulo} en ${ev.lugar}${ev.puntos ? `, y ganas ${ev.puntos} puntos por ir` : ''}. También están el cine y el boliche en las Terrazas.`, reescribir: false, entidades: { actividadId: ev.id }, eventos: [ev] };
@@ -896,7 +1012,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       if (s.estado === 'preparando') {
         const desde = s.preparando_en ? (Date.now() - new Date(s.preparando_en).getTime()) / 60_000 : 0;
         const faltan = Math.max(1, Math.round(Number(s.preparacion_min) - desde));
-        return `${s.nombre} está preparando tu pedido; faltan unos ${faltan} minutos`;
+        return `${s.nombre} está preparando tu pedido; ${faltan === 1 ? 'falta un minuto' : `faltan unos ${faltan} minutos`}`;
       }
       if (s.estado === 'confirmado') return `${s.nombre} confirmó tu pedido y lo empieza a preparar para tu franja de ${horaVoz(hhmmBo(s.franja_inicio))}`;
       return `Tu pedido en ${s.nombre} fue recibido; falta que el local lo confirme`;
@@ -940,7 +1056,7 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
       [c.clienteId],
     );
     const o = sub ? await this.orquestador.esperaComida(c.recintoId, c.clienteId, sub.local_id, 12, true) : null;
-    if (o) return { texto: o.texto, reescribir: false, ruta: o.ruta, ar: o.ar };
+    if (o) return { texto: o.texto, reescribir: false, ruta: o.ruta, acciones: o.acciones };
     return this.cerca(c);
   }
 
@@ -949,8 +1065,8 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     const pos = await this.orientacion.posicion(c.clienteId);
     const o = await this.orquestador.ventaCruzada(c.recintoId, c.clienteId, pos.nodoId, true, 120, true);
     return o
-      ? { texto: o.texto, reescribir: false, ruta: o.ruta, ar: o.ar }
-      : { texto: 'Ahora no hay ofertas a pocos metros de ti. Escanea el QR de un local o un cartel para ubicarte mejor, o pregúntame por las promociones de todo el Paseo.', reescribir: false };
+      ? { texto: o.texto, reescribir: false, ruta: o.ruta, acciones: o.acciones }
+      : { texto: 'Ahora no hay ofertas a pocos metros de ti. Escanea el QR de la puerta de un local para ubicarte mejor, o pregúntame por las promociones de todo el Paseo.', reescribir: false };
   }
 
   // ------------------------------------------------------------------ parqueo y preguntas libres
@@ -958,9 +1074,22 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
   private async parqueo(c: Ctx): Promise<Borrador> {
     const regla = await this.fidelizacion.reglaVigente(this.db, c.recintoId);
     const tarifa = Number(process.env.PARQUEO_TARIFA_HORA_BS ?? 6);
-    const p = c.clienteId ? await this.saber.parqueoAbierto(c.clienteId) : null;
     const base = `El parqueo cuesta ${dinero(tarifa)} la hora, y puedes pagar cada hora con ${regla.puntos_hora_parqueo} puntos desde la app.`;
-    if (!p) return { texto: `${base} El acceso está en el Nivel 1, al este del Paseo.`, reescribir: false, acciones: [{ etiqueta: 'Abrir parqueo', ruta: '/parqueo' }] };
+    // Motos o bicicletas: no hay datos de un parqueo especial; se dice tal cual
+    const vehiculo = /\b(moto|motos|motocicleta|bici|bicis|bicicleta|bicicletas)\b/.exec(c.t)?.[0];
+    if (vehiculo) {
+      // Si la administración cargó información sobre esto, esa es la respuesta
+      if (c.ent.ev.info.length) return this.info(c);
+      return {
+        texto: `No tengo información sobre parqueo para ${/bici/.test(vehiculo) ? 'bicicletas' : 'motos'}: no está registrado en los datos del Paseo. Te conviene consultar en el acceso del parqueo o en el módulo de información. ${base}`,
+        reescribir: false,
+        sinDatos: `parqueo de ${/bici/.test(vehiculo) ? 'bicicletas' : 'motos'}`,
+      };
+    }
+    // El ticket del cliente solo si pregunta por su parqueo
+    const propio = /\b(mi (auto|carro|vehiculo|ticket|parqueo)|cuanto (llevo|debo|pago|tengo que pagar)|pagar (el )?parqueo|cuanto me sale)\b/.test(c.t);
+    const p = c.clienteId && propio ? await this.saber.parqueoAbierto(c.clienteId) : null;
+    if (!p) return { texto: `${base} El acceso está en el Nivel 1, al este del Paseo.${propio && c.clienteId ? ' No tienes un ticket de parqueo abierto ahora.' : ''}`, reescribir: false, acciones: [{ etiqueta: 'Abrir parqueo', ruta: '/parqueo' }] };
     const min = Math.max(1, Math.round((Date.now() - new Date(p.entrada_en).getTime()) / 60_000));
     const horas = Math.ceil(min / 60);
     return {
@@ -970,24 +1099,209 @@ recomendacion = qué le recomiendas; libre = cualquier otra pregunta sobre el Pa
     };
   }
 
-  /** Preguntas poco comunes: el modelo local responde solo con los datos del Paseo. */
+  // ------------------------------------------------------------------ buscar con evidencia y responder con honestidad
+
+  /**
+   * «¿Hay gimnasio?», «¿venden celulares?», «quiero un café», «tiendas de ropa»: responde con lo que
+   * respalda la pregunta en los datos del Paseo. Si no hay nada, lo dice y avisa a la administración.
+   */
+  private async buscarTema(c: Ctx, para: 'precio' | 'buscar' = 'buscar'): Promise<Borrador> {
+    const ev = c.ent.ev;
+    if (c.ent.servicio && !c.ent.locales.length && !ev.productos.length) return this.servicio(c);
+    if (ev.vertical) return this.zona(c);
+    if (ev.infoFuerte || (ev.info.length && !ev.productos.length && !c.ent.locales.length)) return this.info(c);
+    if ((c.ent.locales.length && !c.ent.localPorRubro) || ev.localesNombre.length) {
+      const l = (c.ent.localPorRubro ? null : c.ent.locales[0]) ?? ev.localesNombre[0];
+      return this.localInfo({ ...c, ent: { ...c.ent, locales: [l as any] } });
+    }
+    if (ev.zonas.length) return this.zona(c);
+    if (ev.productos.length) return para === 'precio' ? this.precio(c) : this.producto(c);
+    if (ev.localesRubro.length) return this.localesDeRubro(c);
+    return this.sinDatos(c);
+  }
+
+  /** Locales por rubro o categoría: «¿hay tiendas de ropa?», «¿venden celulares?», «¿qué restaurantes hay?». */
+  private async localesDeRubro(c: Ctx): Promise<Borrador> {
+    const ev = c.ent.ev;
+    const ids = ev.localesRubro.map((l) => l.id);
+    const ls = ev.categoria && !ev.localesRubro.some((l) => l.categoria !== ev.categoria)
+      ? await this.saber.localesDeCategoria(c.recintoId, ev.categoria)
+      : (await this.saber.localesPorId(ids)).map((l: any) => ({ ...l, abierto: undefined }));
+    if (!ls.length) return this.sinDatos(c);
+    const raizRubro = ev.palabras.find((w) => !esDeCategoria(w) && ev.localesRubro.some((l) => l.raicesRubro.includes(w)));
+    const rubro = raizRubro ? comoLaDijo(c.original, raizRubro) : undefined;
+    const partes: string[] = [];
+    const condicion = JarvisService.condicionSinDatos(c);
+    if (condicion) partes.push(`No tengo opciones «${condicion}» registradas en el Paseo.`);
+    if (!raizRubro) {
+      const dicha = ev.palabras.find(esDeCategoria);
+      const que = ev.categoria === 'Comida' ? 'comer' : dicha ? comoLaDijo(c.original, dicha).toLowerCase() : ev.categoria ? ev.categoria.toLowerCase() : objetoDe(c.original);
+      const nombres = ls.slice(0, 5).map((l: any) => `${l.nombre} (${JarvisService.ubicacionCorta(l)})`);
+      partes.push(`${ls.length === 1 ? `Para ${que} está` : `Para ${que} hay ${ls.length} locales:`} ${lista(nombres)}${ls.length > 5 ? `, y ${ls.length - 5} más` : ''}.`);
+    } else {
+      // El rubro está en el nombre o la descripción del local («farmacia») o solo es algo relacionado («gimnasio» → ropa deportiva)
+      const directos = ls.filter((l: any) => raicesDe(`${l.nombre} ${l.descripcion ?? ''}`).includes(raizRubro));
+      const describe = (l: any) => `${l.nombre} (${l.descripcion ? `${l.descripcion.charAt(0).toLowerCase()}${l.descripcion.slice(1)}, ` : ''}${JarvisService.ubicacionCorta(l)})`;
+      if (directos.length) partes.push(`Para ${rubro} ${directos.length === 1 ? 'está' : 'tienes'} ${lista(directos.slice(0, 4).map(describe))}.`);
+      else partes.push(`No tengo registrado un local de «${rubro}» como tal en el Paseo. Lo relacionado es ${lista(ls.slice(0, 3).map(describe))}.`);
+      // «¿venden celulares?»: si en PaseoYa no hay un producto con ese nombre, se dice
+      if (!ev.productos.length && /\b(venden|vende|vendan|comprar|compro|precio|cuesta|cuestan|cuanto)\b/.test(c.t)) {
+        const rel = ev.productosRelacionados.filter((p) => ids.includes(p.local_id)).slice(0, 2);
+        partes.push(`En PaseoYa no tienen publicado ningún producto llamado «${rubro}»${rel.length ? `; lo relacionado es ${lista(rel.map((p) => `${p.nombre} en ${p.local} a ${dinero(p.precio)}`))}` : ''}. Para modelos y precios, consulta en el local.`);
+      }
+    }
+    return {
+      texto: partes.join(' '),
+      reescribir: false,
+      entidades: { localId: ls[0].id, categoria: ev.categoria ?? undefined },
+      propuesta: { intencion: 'donde', entidades: { localId: ls[0].id } },
+      sugerencias: ls.slice(0, 2).map((l: any) => `¿Cómo llego a ${l.nombre}?`),
+      sinDatos: condicion ?? undefined,
+    };
+  }
+
+  /** No hay ningún dato que respalde la pregunta: decirlo claro, sin rellenar con otra cosa. */
+  private sinDatos(c: Ctx): Borrador {
+    const objeto = objetoDe(c.original);
+    if (!objeto) return { texto: `No entendí qué buscas. ${NO_ENTIENDO}`, reescribir: false, sugerencias: SUGERENCIAS_BASE };
+    return {
+      texto: `No encontré «${objeto}» en el Paseo Aranjuez: no aparece como local, producto, servicio ni evento en los datos que tengo. Le avisé a la administración que lo buscaste. ¿Te ayudo con otra cosa?`,
+      reescribir: false,
+      sinDatos: objeto,
+      sugerencias: SUGERENCIAS_BASE,
+    };
+  }
+
+  /**
+   * Una condición pegada a lo que busca y que ningún dato respalda: «comida vegana», «zapatillas nike»,
+   * «descuentos para estudiantes». Solo cuenta si va justo después de algo que sí se reconoció.
+   */
+  private static condicionSinDatos(c: Ctx): string | null {
+    const ev = c.ent.ev;
+    if (!ev.faltantes.length) return null;
+    const ws = norm(c.original).split(' ');
+    const reconocidas = new Set(ev.palabras.filter((w) => !ev.faltantes.includes(w)));
+    const pegadas = ev.faltantes.filter((f) => {
+      const i = ws.findIndex((w) => raiz(w) === f);
+      return i > 0 && [ws[i - 1], ws[i - 2]].some((w) => w && reconocidas.has(raiz(w)));
+    });
+    return pegadas.length ? pegadas.map((w) => comoLaDijo(c.original, w)).join(' ') : null;
+  }
+
+  /** Información general del Paseo cargada por la administración (medios de pago, devoluciones…). */
+  private async info(c: Ctx): Promise<Borrador> {
+    const i = c.ent.ev.info[0];
+    if (!i) return this.libre(c);
+    return { texto: i.respuesta, reescribir: false, sugerencias: SUGERENCIAS_BASE };
+  }
+
+  /** Zonas del Paseo («el patio de comidas») y conexiones verticales («¿hay ascensor?»). */
+  private async zona(c: Ctx): Promise<Borrador> {
+    const ev = c.ent.ev;
+    const g = await this.orientacion.grafo(c.recintoId);
+    if (ev.vertical) {
+      const nodos = [...g.nodos.values()].filter((n) => n.tipo === ev.vertical);
+      if (!nodos.length) return this.sinDatos(c);
+      const pisos = [...new Set(nodos.map((n) => n.piso))];
+      let mejor: { ruta?: Ruta } = {};
+      for (const n of nodos) {
+        const { ruta } = await this.rutaHasta(c, n.id);
+        if (ruta && (!mejor.ruta || ruta.metros < mejor.ruta.metros)) mejor = { ruta };
+      }
+      const nombre = ev.vertical === 'ascensor' ? 'un ascensor' : 'una escalera central';
+      const cerca = mejor.ruta ? (mejor.ruta.metros < 10 ? ' Estás justo al lado.' : ` El más cercano está a ${mejor.ruta.metros} metros: ${JarvisService.primerPaso(mejor.ruta)}`) : '';
+      return {
+        texto: `Sí, hay ${nombre} que conecta ${lista(pisos.map((p) => (p === 'T' ? 'las Terrazas' : `el ${NOMBRE_PISO[p]}`)))}.${cerca}`,
+        reescribir: false,
+        ruta: mejor.ruta,
+        acciones: mejor.ruta ? [{ etiqueta: 'Ver ruta en el mapa', ruta: '/ruta' }] : undefined,
+      };
+    }
+    const z = ev.zonas[0];
+    if (!z) return this.sinDatos(c);
+    const nombreZona = `${conArticulo(z.nombre.charAt(0).toLowerCase() + z.nombre.slice(1))}`;
+    const ls = await many<any>(this.db, 'select id, nombre from local where zona_id = $1 and activo order by nombre', [z.id]);
+    const pasillo = [...g.nodos.values()].filter((n) => n.zonaId === z.id && n.tipo === 'pasillo');
+    const destino = pasillo[Math.floor(pasillo.length / 2)];
+    const { ruta } = destino ? await this.rutaHasta(c, destino.id) : { ruta: undefined };
+    const donde = z.piso === 'T' ? 'en las Terrazas' : `en el ${NOMBRE_PISO[z.piso]}`;
+    return {
+      texto: `${nombreZona.charAt(0).toUpperCase() + nombreZona.slice(1)} está ${donde}${ruta && ruta.metros >= 10 ? `, a ${ruta.metros} metros de ti` : ''}.${ls.length ? ` Ahí están ${lista(ls.slice(0, 6).map((l) => l.nombre))}${ls.length > 6 ? `, y ${ls.length - 6} más` : ''}.` : ''}`,
+      reescribir: false,
+      ruta,
+      acciones: ruta ? [{ etiqueta: 'Ver ruta en el mapa', ruta: '/ruta' }] : undefined,
+    };
+  }
+
+  /** «¿Cuántos locales hay?»: se cuenta en la base. */
+  private async conteo(c: Ctx): Promise<Borrador> {
+    if (/\b(pisos|niveles)\b/.test(c.t)) {
+      return { texto: 'El Paseo Aranjuez tiene tres niveles: el Nivel 1, el Nivel 2 y las Terrazas, donde están el patio de comidas, los cines y la terraza.', reescribir: false };
+    }
+    const cs = await this.saber.conteo(c.recintoId);
+    const total = cs.reduce((a, x) => a + x.n, 0);
+    const comida = cs.filter((x) => x.ambito === 'comida').reduce((a, x) => a + x.n, 0);
+    if (/restaurante|comer|comida/.test(c.t)) return { texto: `Hay ${comida} locales de comida en el Paseo. Si quieres, te digo cuáles.`, reescribir: false, sugerencias: ['¿Qué restaurantes hay?'] };
+    const detalle = cs.filter((x) => x.ambito !== 'comida').map((x) => `${x.n} de ${x.categoria.toLowerCase()}`);
+    return {
+      texto: `El Paseo Aranjuez tiene ${total} locales activos: ${comida} de comida y ${total - comida} tiendas y servicios (${lista(detalle)}).`,
+      reescribir: false,
+      sugerencias: ['¿Qué restaurantes hay?', '¿Hay tiendas de ropa?'],
+    };
+  }
+
+  /** «¿Qué películas dan?»: la cartelera no está en los datos; se dice y se ofrece lo que sí hay. */
+  private async cartelera(c: Ctx): Promise<Borrador> {
+    const cine = (await this.saber.evidencia(c.recintoId, 'cine')).localesNombre[0] ?? (await this.saber.evidencia(c.recintoId, 'cine')).localesRubro[0];
+    const l = cine ? await this.saber.local(cine.id) : null;
+    const evs = (await this.saber.eventos(c.recintoId, new Date(), new Date(Date.now() + 7 * 86400_000))).filter((e) => e.tipo === 'cine').slice(0, 2);
+    const partes = ['No tengo la cartelera de películas: los títulos y horarios de las funciones no están cargados en Paseo Points.'];
+    if (l) partes.push(`${l.nombre} está en ${JarvisService.ubicacion(l)} y ${l.abierto ? `hoy atiende hasta ${horaVoz(l.cierre)}` : l.abiertoHoy ? `hoy abre a ${horaVoz(l.apertura)}` : 'hoy no atiende'}; ahí te dan la cartelera.`);
+    if (evs.length) partes.push(`En eventos del Paseo sí tengo ${lista(evs.map((e) => `${e.titulo}, ${diaVoz(e.inicio)} a ${horaVoz(hhmmBo(e.inicio))}`))}.`);
+    return {
+      texto: partes.join(' '),
+      reescribir: false,
+      sinDatos: 'cartelera del cine',
+      entidades: { localId: l?.id },
+      propuesta: l ? { intencion: 'donde', entidades: { localId: l.id } } : undefined,
+      eventos: evs,
+      sugerencias: l ? [`¿Cómo llego a ${l.nombre}?`, '¿Qué eventos hay hoy?'] : ['¿Qué eventos hay hoy?'],
+    };
+  }
+
+  /** Preguntas que no son del Paseo: Jarvis no contesta de memoria. */
+  private fueraDeTema(c: Ctx): Borrador {
+    const clima = /(clima|tiempo hace|llover|llovera|temperatura|pronostico)/.test(c.t);
+    return {
+      texto: clima
+        ? 'No tengo datos del clima. Puedo ayudarte con lo que hay dentro del Paseo: promociones, eventos, tiendas, precios o cómo llegar a un lugar.'
+        : 'Eso no lo sé: solo tengo información del Paseo Aranjuez, como tiendas, precios, promociones, eventos, servicios y tus puntos. ¿Te ayudo con algo de eso?',
+      reescribir: false,
+      sugerencias: SUGERENCIAS_BASE,
+    };
+  }
+
+  /**
+   * Lo que no encaja en nada: si la administración cargó información del tema, se usa; si no, se
+   * dice con honestidad que no se tiene ese dato. Jarvis no genera respuestas de memoria.
+   */
   private async libre(c: Ctx): Promise<Borrador> {
-    const { hhmm } = ahoraBolivia();
-    const servicios = await many<any>(this.db, 'select nombre, descripcion, piso, horario from servicio_paseo where recinto_id = $1 and activo', [c.recintoId]);
-    const vistos = new Set<string>();
-    const datos = [
-      `Hora actual: ${hhmm}. El Paseo Aranjuez tiene Nivel 1, Nivel 2 y las Terrazas (patio de comidas, cines, boliche y terraza).`,
-      ...servicios.filter((s) => (vistos.has(s.nombre) ? false : vistos.add(s.nombre))).map((s) => `${s.nombre} (${NOMBRE_PISO[s.piso]}): ${s.descripcion}${s.horario ? ` Horario: ${s.horario}.` : ''}`),
-    ];
-    const promos = (await this.saber.promociones(c.recintoId, c.clienteId)).filter((p) => p.ahora).slice(0, 3);
-    if (promos.length) datos.push(`Promociones activas ahora: ${promos.map((p) => `${p.titulo}${p.local ? ` en ${p.local}` : ''}`).join('; ')}.`);
-    const evs = (await this.saber.eventos(c.recintoId, new Date(), finDelDia())).slice(0, 3);
-    if (evs.length) datos.push(`Eventos de hoy: ${evs.map((e) => `${e.titulo} a las ${hhmmBo(e.inicio)} en ${e.lugar}`).join('; ')}.`);
-    const r = await this.cerebro.responderLibre(c.original, datos, MemoriaJarvis.paraPrompt(c.hilo, 4));
-    if (r) return { texto: r.texto, reescribir: false, motor: r.motor } as Borrador;
-    return { texto: `No tengo ese dato, pero sí puedo ayudarte con otras cosas. ${NO_ENTIENDO}`, reescribir: false, sugerencias: ['¿Qué promociones hay ahora?', '¿Qué eventos hay hoy?', '¿Dónde hay un baño?'] };
+    if (c.ent.ev.info.length) return this.info(c);
+    if (JarvisService.hayEvidencia(c.ent)) return this.buscarTema(c);
+    const objeto = objetoDe(c.original);
+    return {
+      texto: objeto
+        ? `No tengo información sobre «${objeto}» en los datos del Paseo, y prefiero no adivinar. Le avisé a la administración para que la agregue. ${NO_ENTIENDO}`
+        : `No entendí tu pregunta. ${NO_ENTIENDO}`,
+      reescribir: false,
+      sinDatos: objeto || undefined,
+      sugerencias: SUGERENCIAS_BASE,
+    };
   }
 }
+
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+const DIAS_PLURAL = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
 
 /** «en el Nivel 1», «en las Terrazas». */
 function enPiso(piso: string) {

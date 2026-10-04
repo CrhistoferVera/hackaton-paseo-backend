@@ -23,7 +23,7 @@ export const de = (conArt: string) => `de ${conArt}`.replace(/^de el /, 'del ');
 export function horaVoz(hhmm: string) {
   const [h, m] = String(hhmm).slice(0, 5).split(':').map(Number);
   if (h === 12 && m === 0) return 'el mediodía';
-  if (h === 0 && m === 0) return 'la medianoche';
+  if ((h === 0 && m === 0) || (h === 23 && m === 59)) return 'la medianoche';
   const h12 = h % 12 === 0 ? 12 : h % 12;
   const franja = h < 12 ? 'de la mañana' : h < 19 ? 'de la tarde' : 'de la noche';
   return `${h12 === 1 ? 'la' : 'las'} ${h12}${m ? `:${String(m).padStart(2, '0')}` : ''} ${franja}`;

@@ -803,10 +803,95 @@ create table ajuste_ia (
 );
 `,
   },
+  {
+    id: '008_carritos_variantes',
+    sql: /* sql */ `
+create table producto_grupo_variante (
+  id uuid primary key default gen_random_uuid(),
+  producto_id uuid not null references producto(id) on delete cascade,
+  titulo text not null,
+  orden int not null default 0,
+  activo boolean not null default true,
+  unique (id, producto_id)
+);
+create table producto_variante (
+  id uuid primary key default gen_random_uuid(),
+  grupo_id uuid not null,
+  producto_id uuid not null references producto(id) on delete cascade,
+  nombre text not null,
+  precio_bs numeric(12,2) check (precio_bs >= 0),
+  stock int not null default 0 check (stock >= 0),
+  foto_url text,
+  activo boolean not null default true,
+  foreign key (grupo_id, producto_id) references producto_grupo_variante(id, producto_id) on delete cascade
+);
+create index producto_variante_producto_idx on producto_variante(producto_id);
+alter table subpedido_item add column variante_id uuid references producto_variante(id);
+alter table subpedido_item add column variante_detalle text;
+create table subpedido_item_variante (
+  item_id uuid not null references subpedido_item(id) on delete cascade,
+  variante_id uuid not null references producto_variante(id),
+  primary key (item_id, variante_id)
+);
+alter table pedido add column tipo text;
+update pedido p set tipo = case when exists (
+  select 1 from subpedido s join subpedido_item i on i.subpedido_id=s.id
+  join producto pr on pr.id=i.producto_id join categoria c on c.id=pr.categoria_id
+  where s.pedido_id=p.id and c.ambito='comida'
+) then 'comida' else 'retail' end;
+alter table pedido alter column tipo set not null;
+alter table pedido add constraint pedido_tipo_check check (tipo in ('comida','retail'));
+alter table pedido add column fecha_estimada_retiro date;
+update pedido set fecha_estimada_retiro=(franja_inicio at time zone 'America/La_Paz')::date where tipo='retail';
+alter table pedido add constraint pedido_fecha_retail_check check (tipo <> 'retail' or fecha_estimada_retiro is not null);
+alter table pedido alter column franja_inicio drop not null;
+alter table pedido alter column franja_fin drop not null;
+alter table subpedido add column tiempo_preparacion_min int;
+`,
+  },
+  {
+    id: '009_local_imagen_banner',
+    sql: /* sql */ `
+alter table local add column if not exists foto_url text;
+alter table local add column if not exists banner_url text;
+`,
+  },
+  { id: '010_promociones_canje', sql: /* sql */ `
+alter table promocion add column costo_puntos int check (costo_puntos > 0);
+alter table recompensa add column promocion_id uuid unique references promocion(id);
+` },
+  {
+    id: '011_sin_ar_e_info_paseo',
+    sql: /* sql */ `
+-- Sin realidad aumentada: se quitan los carteles (hitos) y sus monedas. Los Drops se reclaman desde la app.
+delete from nodo_ubicacion where tipo = 'hito';
+alter table nodo_ubicacion drop column if exists hito_id;
+alter table nodo_ubicacion drop constraint if exists nodo_ubicacion_tipo_check;
+alter table nodo_ubicacion add constraint nodo_ubicacion_tipo_check check (tipo in ('pasillo','local','entrada','escalera','ascensor','servicio'));
+drop table if exists reclamo_hito;
+drop table if exists hito;
+
+-- Información general del Paseo que Jarvis puede citar (medios de pago, devoluciones, accesos…).
+-- La administra el equipo del Paseo; Jarvis responde solo con lo que está aquí o en los datos vivos.
+create table if not exists info_paseo (
+  id uuid primary key default gen_random_uuid(),
+  recinto_id uuid not null references recinto(id),
+  tema text not null,
+  palabras_clave text[] not null default '{}',
+  respuesta text not null,
+  activo boolean not null default true,
+  actualizado_por uuid references usuario(id),
+  actualizado_en timestamptz not null default now()
+);
+create index if not exists info_paseo_recinto_idx on info_paseo (recinto_id) where activo;
+`,
+  },
 ];
+
 
 /** Tablas propias del sistema: el reinicio del seed borra solo estas, nunca otras de la misma base. */
 export const TABLAS_PROPIAS = [
   ...new Set(MIGRACIONES.flatMap((m) => [...m.sql.matchAll(/create table (?:if not exists )?(\w+)/g)].map((x) => x[1]))),
   '_migracion',
+
 ];

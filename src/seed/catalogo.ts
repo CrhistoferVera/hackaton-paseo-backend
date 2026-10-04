@@ -454,3 +454,35 @@ export const NOMBRES = ['María', 'José', 'Ana', 'Luis', 'Carla', 'Jorge', 'Luc
 export const APELLIDOS = ['Rojas', 'Mamani', 'Quispe', 'Flores', 'Gutiérrez', 'Vargas', 'Choque', 'Fernández', 'López', 'Torrez', 'Céspedes', 'Arce', 'Morales', 'Pinto', 'Salazar', 'Villca', 'Condori', 'Paz', 'Suárez', 'Ríos', 'Ayala', 'Mendoza', 'Rocha', 'Aguilar', 'Ticona', 'Apaza', 'Calle', 'Zeballos'];
 export const ZONAS_RESIDENCIA = ['Calacoto', 'Achumani', 'Obrajes', 'San Miguel', 'Irpavi', 'Sopocachi', 'Miraflores', 'Mallasa', 'Cota Cota', 'Següencoma', 'Centro', 'El Alto', 'Alto Obrajes', 'Los Pinos'];
 export const BUSQUEDAS_SIN_RESULTADO = ['zara', 'apple store', 'starbucks', 'h&m', 'farmacia 24 horas', 'cine 4dx', 'decathlon', 'sony', 'tienda de vinos', 'spa', 'kfc', 'tienda naturista', 'ikea', 'gimnasio', 'lavandería', 'cerrajería', 'sastrería', 'tienda de bicicletas'];
+
+/**
+ * Información general del Paseo que Jarvis puede citar tal cual. La administra el equipo del Paseo
+ * en «Información para Jarvis»; estos textos son de ejemplo y deben revisarse antes de producción.
+ */
+export const INFO_PASEO: { tema: string; claves: string[]; respuesta: string }[] = [
+  {
+    tema: 'Medios de pago',
+    claves: ['tarjeta', 'tarjetas', 'tarjeta de credito', 'tarjeta de debito', 'credito', 'debito', 'efectivo', 'pago con qr', 'pagar con qr', 'visa', 'mastercard', 'medios de pago', 'formas de pago', 'como pago', 'aceptan'],
+    respuesta: 'Cada local define sus medios de pago; la mayoría acepta efectivo, tarjetas de débito y crédito y pago con QR. En PaseoYa pagas con QR desde la app. Si quieres estar seguro, pregunta en la caja del local.',
+  },
+  {
+    tema: 'Cambios y devoluciones',
+    claves: ['devolver', 'devolucion', 'devoluciones', 'cambio de producto', 'cambiar un producto', 'garantia', 'reembolso', 'reclamo', 'reclamar una compra'],
+    respuesta: 'Los cambios y devoluciones los define cada local; normalmente piden la factura y el producto sin uso. Si tienes un problema con una compra, el módulo de información del Nivel 1, junto a la Puerta Norte, te ayuda.',
+  },
+  {
+    tema: 'Facturas y puntos',
+    claves: ['factura', 'facturas', 'siat', 'registrar factura', 'escanear factura', 'compre sin la app', 'olvide sumar puntos'],
+    respuesta: 'Si compraste en un local del Paseo y no sumaste puntos en caja, escanea el QR de tu factura en la app, en Facturas, el mismo día de la compra. Cada factura suma puntos una sola vez.',
+  },
+  {
+    tema: 'Fumar',
+    claves: ['fumar', 'cigarro', 'cigarrillo', 'vapear', 'vape', 'zona de fumadores'],
+    respuesta: 'No se permite fumar ni vapear dentro del Paseo. Puedes hacerlo afuera, en los accesos al aire libre.',
+  },
+  {
+    tema: 'Seguridad',
+    claves: ['seguridad', 'guardia', 'guardias', 'emergencia', 'robo', 'me robaron', 'policia'],
+    respuesta: 'Hay guardias de seguridad en todos los niveles. Ante una emergencia avisa a cualquier guardia o acércate al módulo de información del Nivel 1, junto a la Puerta Norte.',
+  },
+];

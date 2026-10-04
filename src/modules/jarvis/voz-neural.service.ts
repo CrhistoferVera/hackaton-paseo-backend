@@ -17,16 +17,24 @@ interface Motor {
   generate(o: { text: string; sid: number; speed: number }): { samples: Float32Array; sampleRate: number };
 }
 
-/** Lo que se escribe para leer no siempre se dice igual: «×2», «Bs», «%», siglas. */
+/**
+ * Lo que se escribe para leer no siempre se dice igual: «×2», «Bs 42.794», «+33,7 %», «18:00», siglas.
+ * Las cifras del asistente del admin vienen con formato boliviano (punto de miles, coma decimal).
+ */
 export function textoParaVoz(t: string) {
   return t
     .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/(\d)\.(?=\d{3}(?!\d))/g, '$1')
     .replace(/×\s?(\d+(?:[.,]\d+)?)/g, ' por $1')
-    .replace(/\bBs\.?\s?(\d)/g, '$1')
+    .replace(/\bBs\.?\s?(\d+(?:,\d+)?)/g, '$1 bolivianos')
+    .replace(/(^|[\s(])([+-])(\d)/g, (_m, a: string, s: string, d: string) => `${a}${s === '+' ? 'más ' : 'menos '}${d}`)
+    .replace(/(\d),(\d)/g, '$1 coma $2')
     .replace(/(\d)\s?%/g, '$1 por ciento')
+    .replace(/\b(\d{1,2}):00\b/g, '$1')
+    .replace(/\b(\d{1,2}):(\d{2})\b/g, '$1 y $2')
     .replace(/PaseoYa/g, 'Paseo Ya')
     .replace(/\bQR\b/g, 'cu erre')
-    .replace(/\bAR\b/g, 'a erre')
+    .replace(/\bIA\b/g, 'i a')
     .replace(/\bATM\b/g, 'cajero')
     .replace(/[«»"“”*_#]/g, '')
     .replace(/\s+/g, ' ')

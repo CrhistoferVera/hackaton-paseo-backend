@@ -21,6 +21,8 @@ export interface DatosLocal {
   palabrasClave?: string[];
   nit?: string | null;
   activo?: boolean;
+  fotoUrl?: string | null;
+  bannerUrl?: string | null;
 }
 
 /** Plano, locales, categorías y buscador del Paseo (módulo recinto). */
@@ -68,7 +70,7 @@ export class RecintoService {
   }
 
   /**
-   * Capas en vivo del mapa: promociones activas ahora por local, Drops abiertos, monedas del día,
+   * Capas en vivo del mapa: promociones activas ahora por local, Drops abiertos (en su local) y
    * eventos en curso o de hoy. Solo lectura sobre tablas de otros módulos.
    */
   async capas(recintoId: string, clienteId: string | null) {
@@ -83,19 +85,11 @@ export class RecintoService {
     );
     const drops = await many(
       this.db,
-      `select d.id, d.zona_id, z.piso, z.x + z.ancho / 2 as x, 330 as y, d.precio_especial, d.mensaje, d.fin, p.nombre as producto, l.nombre as local, h.codigo as cartel,
+      `select d.id, l.id as local_id, l.piso, l.coord_x as x, l.coord_y as y, d.precio_especial, d.mensaje, d.fin, p.nombre as producto, l.nombre as local,
               d.max_reclamos - (select count(*)::int from reclamo_drop r where r.drop_id = d.id) as quedan
-       from drop_espacial d join zona z on z.id = d.zona_id join producto p on p.id = d.producto_id join local l on l.id = p.local_id
-       left join hito h on h.zona_id = d.zona_id and h.activo
+       from drop_espacial d join producto p on p.id = d.producto_id join local l on l.id = coalesce(d.local_id, p.local_id)
        where d.recinto_id = $1 and now() between d.inicio and d.fin`,
       [recintoId],
-    );
-    const monedas = await many(
-      this.db,
-      `select h.id, h.codigo, h.puntos, z.piso, z.x + z.ancho / 2 as x, 330 as y, z.nombre as zona,
-              ($2::uuid is not null and exists (select 1 from reclamo_hito r where r.hito_id = h.id and r.cliente_id = $2 and r.fecha = $3::date)) as reclamada
-       from hito h join zona z on z.id = h.zona_id where h.recinto_id = $1 and h.activo`,
-      [recintoId, clienteId, fecha],
     );
     const eventos = await many(
       this.db,
@@ -105,7 +99,7 @@ export class RecintoService {
        where a.recinto_id = $1 and a.estado = 'aprobada' and a.fin > now() and bo(a.inicio)::date <= $2::date`,
       [recintoId, fecha],
     );
-    return { promociones, drops, monedas, eventos };
+    return { promociones, drops, eventos };
   }
 
   async zonaPorPunto(q: Queryable, recintoId: string, piso: string, x: number, y: number) {
@@ -208,12 +202,12 @@ export class RecintoService {
       const l = await one(
         q,
         `insert into local (recinto_id, nombre, categoria_id, piso, sector, numero_local, coord_x, coord_y, zona_id,
-           horario_apertura, horario_cierre, descripcion, palabras_clave, nit, codigo_puerta, activo)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning *`,
+           horario_apertura, horario_cierre, descripcion, palabras_clave, nit, codigo_puerta, activo, foto_url, banner_url)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning *`,
         [
           s.recintoId, d.nombre, d.categoriaId, d.piso, d.sector, d.numeroLocal, d.coordX, d.coordY, zona,
           d.horarioApertura ?? '10:00', d.horarioCierre ?? '22:00', d.descripcion ?? '', d.palabrasClave ?? [],
-          d.nit ?? null, `L-${codigoLegible(8)}`, d.activo ?? true,
+          d.nit ?? null, `L-${codigoLegible(8)}`, d.activo ?? true, d.fotoUrl ?? null, d.bannerUrl ?? null,
         ],
       );
       await this.auditoria.registrar(q, s.sub, 'crear_local', 'local', l.id, null, l);
@@ -238,11 +232,14 @@ export class RecintoService {
            numero_local = coalesce($6,numero_local), coord_x = $7, coord_y = $8, zona_id = $9,
            horario_apertura = coalesce($10,horario_apertura), horario_cierre = coalesce($11,horario_cierre),
            descripcion = coalesce($12,descripcion), palabras_clave = coalesce($13,palabras_clave), nit = coalesce($14,nit),
-           activo = coalesce($15,activo)
+           activo = coalesce($15,activo),
+           foto_url = case when $16::boolean then $17 else foto_url end,
+           banner_url = case when $18::boolean then $19 else banner_url end
          where id = $1 returning *`,
         [
           id, d.nombre ?? null, d.categoriaId ?? null, piso, d.sector ?? null, d.numeroLocal ?? null, x, y, zona,
           d.horarioApertura ?? null, d.horarioCierre ?? null, d.descripcion ?? null, d.palabrasClave ?? null, d.nit ?? null, d.activo ?? null,
+          d.fotoUrl !== undefined, d.fotoUrl ?? null, d.bannerUrl !== undefined, d.bannerUrl ?? null,
         ],
       );
       await this.auditoria.registrar(q, s.sub, 'actualizar_local', 'local', id, antes, l);
@@ -260,6 +257,20 @@ export class RecintoService {
        left join zona z on z.id = l.zona_id where l.id = $1`,
       [id],
     );
+  }
+
+  async actualizarMiLocal(localId: string, d: { descripcion?: string; fotoUrl?: string | null; bannerUrl?: string | null }) {
+    const l = await one<any>(
+      this.db,
+      `update local set
+         descripcion = coalesce($2, descripcion),
+         foto_url = case when $3::boolean then $4 else foto_url end,
+         banner_url = case when $5::boolean then $6 else banner_url end
+       where id = $1 returning *`,
+      [localId, d.descripcion ?? null, d.fotoUrl !== undefined, d.fotoUrl ?? null, d.bannerUrl !== undefined, d.bannerUrl ?? null],
+    );
+    if (!l) throw new NotFoundException('Local no encontrado');
+    return l;
   }
 
   // -------------------------------------------------------------- HU-L07 QR de puerta en PDF

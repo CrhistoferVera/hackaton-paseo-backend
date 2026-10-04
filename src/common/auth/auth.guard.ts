@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { timingSafeEqual } from 'node:crypto';
+import { Db, one } from '../../infra/db/db.js';
 import { Rol, Sesion, verificarJwt } from './tokens.js';
 
 const PUBLICO = 'publico';
@@ -28,9 +29,12 @@ export const SesionActual = createParamDecorator((_: unknown, ctx: ExecutionCont
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly db: Db,
+  ) {}
 
-  canActivate(ctx: ExecutionContext): boolean {
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     // Los mensajes por WebSocket se autentican al conectar (RealtimeGateway) y cada gateway valida la sesión del socket
     if (ctx.getType() === 'ws') return true;
     const objetivo = [ctx.getHandler(), ctx.getClass()];
@@ -50,7 +54,13 @@ export class AuthGuard implements CanActivate {
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : String(req.query?.token ?? '');
     const sesion = token ? verificarJwt(token) : null;
     if (!sesion) throw new UnauthorizedException('Inicia sesión para continuar');
-    req.sesion = sesion;
+    const usuario = await one<{ recinto_id: string }>(
+      this.db,
+      `select recinto_id from usuario where id = $1 and estado = 'activo'`,
+      [sesion.sub],
+    );
+    if (!usuario) throw new UnauthorizedException('La sesión ya no es válida. Inicia sesión nuevamente');
+    req.sesion = { ...sesion, recintoId: usuario.recinto_id };
 
     const roles = this.reflector.getAllAndOverride<Rol[]>(ROLES, objetivo);
     if (roles?.length && !roles.includes(sesion.rol)) {

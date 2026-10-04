@@ -12,11 +12,11 @@ const locales = [
   { id: 'tecno', nombre: 'TecnoCentro', piso: 'N1', numero_local: '136', coord_x: 750, coord_y: 140, zona_id: 'N1-C', codigo_puerta: 'L-TECNO', activo: true },
   { id: 'burger', nombre: 'Burger House', piso: 'T', numero_local: 'T06', coord_x: 200, coord_y: 480, zona_id: 'T-A', codigo_puerta: 'L-BURGER', activo: true },
 ];
-const hitos = [{ id: 'h1', nombre: 'Cartel', zona_id: 'N2-B', codigo: 'N2-B' }];
+
 const servicios = [{ id: 'b1', nombre: 'el baño del Nivel 1', piso: 'N1', x: 330, y: 230, zona_id: 'N1-A' }];
 
 function cargar() {
-  const { nodos, aristas } = construirGrafo({ zonas, locales, hitos, servicios } as any);
+  const { nodos, aristas } = construirGrafo({ zonas, locales, servicios } as any);
   const mapa = new Map<string, Nodo>(nodos.map((n) => [n.id, n]));
   const ady = new Map<string, Arista[]>();
   for (const a of aristas) ady.set(a.desde, [...(ady.get(a.desde) ?? []), a]);
@@ -81,7 +81,7 @@ describe('Fidelidad de cifras', () => {
 
 describe('Persona gramatical', () => {
   it('descarta respuestas en primera persona que el borrador no tenía', () => {
-    expect(CerebroJarvis.primeraPersonaNueva('De paso, en el cartel hay una moneda.', 'Paso por el cartel y encuentra una moneda.')).toBe(true);
-    expect(CerebroJarvis.primeraPersonaNueva('Pasa por el cartel.', 'Pasa por el cartel y encuentra una moneda.')).toBe(false);
+    expect(CerebroJarvis.primeraPersonaNueva('De paso, en Dulce Arte hay un Drop.', 'Paso por Dulce Arte y encuentro un Drop.')).toBe(true);
+    expect(CerebroJarvis.primeraPersonaNueva('Pasa por Dulce Arte.', 'Pasa por Dulce Arte y aprovecha el Drop.')).toBe(false);
   });
 });

@@ -10,7 +10,7 @@ import { PromocionesService } from '../participacion/promociones.service.js';
 const TARIFA_HORA_BS = Number(process.env.PARQUEO_TARIFA_HORA_BS ?? 6);
 const MAX_AVISOS_POR_VISITA = 2;
 
-type Fuente = 'qr_entrada' | 'geocerca' | 'parqueo' | 'paseoya' | 'ar' | 'checkin_local';
+type Fuente = 'qr_entrada' | 'geocerca' | 'parqueo' | 'paseoya' | 'checkin_local';
 
 /**
  * Presencia: visitas al Paseo, check-ins en locales y parqueo. Con estas tres marcas de tiempo
