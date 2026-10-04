@@ -21,7 +21,7 @@ export function conArticulo(nombre: string) {
   return `${art} ${n}`;
 }
 
-export type TipoNodo = 'pasillo' | 'local' | 'hito' | 'entrada' | 'escalera' | 'ascensor' | 'servicio';
+export type TipoNodo = 'pasillo' | 'local' | 'entrada' | 'escalera' | 'ascensor' | 'servicio';
 
 export interface Nodo {
   id: string;
@@ -32,7 +32,6 @@ export interface Nodo {
   y: number;
   zonaId?: string | null;
   localId?: string | null;
-  hitoId?: string | null;
   servicioId?: string | null;
   codigoQr?: string | null;
 }
@@ -47,14 +46,13 @@ export interface Arista {
 export interface EntradaPlano {
   zonas: { id: string; piso: string; sector: string; nombre: string; x: number; y: number; ancho: number; alto: number }[];
   locales: { id: string; nombre: string; piso: string; numero_local: string; coord_x: number; coord_y: number; zona_id: string | null; codigo_puerta: string; activo: boolean }[];
-  hitos: { id: string; nombre: string; zona_id: string | null; codigo: string }[];
   servicios?: { id: string; nombre: string; piso: string; x: number; y: number; zona_id: string | null }[];
 }
 
 const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
   Math.round(Math.hypot(a.x - b.x, a.y - b.y) * METROS_POR_UNIDAD * 10) / 10;
 
-/** Construye nodos y aristas desde el plano: pasillos, locales, hitos, entradas y conexiones verticales. */
+/** Construye nodos y aristas desde el plano: pasillos, locales, servicios, entradas y conexiones verticales. */
 export function construirGrafo(e: EntradaPlano): { nodos: Nodo[]; aristas: Arista[] } {
   const nodos: Nodo[] = [];
   const aristas: Arista[] = [];
@@ -89,14 +87,6 @@ export function construirGrafo(e: EntradaPlano): { nodos: Nodo[]; aristas: Arist
     unir(n, pasilloCercano(l.piso, n.x));
   }
 
-  for (const h of e.hitos) {
-    const z = e.zonas.find((z) => z.id === h.zona_id);
-    if (!z) continue;
-    const x = Number(z.x) + Number(z.ancho) / 2;
-    const n: Nodo = { id: `hito:${h.id}`, piso: z.piso, tipo: 'hito', nombre: `el cartel ${`de ${conArticulo(z.nombre)}`.replace('de el ', 'del ')}`, x, y: Y_PASILLO + 30, zonaId: z.id, hitoId: h.id, codigoQr: `PPH:${h.codigo}` };
-    nodos.push(n);
-    unir(n, pasilloCercano(z.piso, x));
-  }
 
   // Servicios (baños, cajeros automáticos, lactancia…): se llega a ellos como a un local
   for (const s of e.servicios ?? []) {
@@ -233,7 +223,7 @@ export function instrucciones(camino: Nodo[]): Tramo[] {
     primerPasillo = null;
     inicio = hasta;
   };
-  if (['local', 'hito', 'servicio'].includes(camino[0].tipo)) {
+  if (['local', 'servicio'].includes(camino[0].tipo)) {
     agregar(`Sal de ${camino[0].nombre.split(',')[0]} al pasillo.`, 0, 1);
     inicio = 1;
   }

@@ -10,8 +10,7 @@ export interface EventosDominio {
   'visita.iniciada': { recintoId: string; clienteId: string; visitaId: string; fuente: string; puerta?: string | null };
   'pedido.creado': { recintoId: string; clienteId: string; pedidoId: string };
   'subpedido.estado': { recintoId: string; clienteId: string; subpedidoId: string; localId: string; estado: string };
-  'hito.reclamado': { recintoId: string; clienteId: string; hitoId: string };
-  'drop.lanzado': { recintoId: string; dropId: string; zonaId: string; hitoCodigo: string };
+  'drop.lanzado': { recintoId: string; dropId: string; localId: string };
   'recinto.cambiado': { recintoId: string };
 }
 

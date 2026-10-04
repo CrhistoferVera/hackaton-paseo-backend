@@ -3,7 +3,7 @@ import { Queryable, many, one } from '../../infra/db/db.js';
 
 export type TipoMovimiento =
   | 'compra' | 'canje' | 'transferencia' | 'bono' | 'vencimiento' | 'anulacion' | 'referido'
-  | 'mision' | 'descubrimiento' | 'visita' | 'drop' | 'hito' | 'parqueo' | 'paseoya' | 'factura';
+  | 'mision' | 'descubrimiento' | 'visita' | 'drop' | 'parqueo' | 'paseoya' | 'factura';
 
 export interface NuevoMovimiento {
   recintoId: string;

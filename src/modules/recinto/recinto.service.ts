@@ -68,7 +68,7 @@ export class RecintoService {
   }
 
   /**
-   * Capas en vivo del mapa: promociones activas ahora por local, Drops abiertos, monedas del día,
+   * Capas en vivo del mapa: promociones activas ahora por local, Drops abiertos (en su local) y
    * eventos en curso o de hoy. Solo lectura sobre tablas de otros módulos.
    */
   async capas(recintoId: string, clienteId: string | null) {
@@ -83,19 +83,11 @@ export class RecintoService {
     );
     const drops = await many(
       this.db,
-      `select d.id, d.zona_id, z.piso, z.x + z.ancho / 2 as x, 330 as y, d.precio_especial, d.mensaje, d.fin, p.nombre as producto, l.nombre as local, h.codigo as cartel,
+      `select d.id, l.id as local_id, l.piso, l.coord_x as x, l.coord_y as y, d.precio_especial, d.mensaje, d.fin, p.nombre as producto, l.nombre as local,
               d.max_reclamos - (select count(*)::int from reclamo_drop r where r.drop_id = d.id) as quedan
-       from drop_espacial d join zona z on z.id = d.zona_id join producto p on p.id = d.producto_id join local l on l.id = p.local_id
-       left join hito h on h.zona_id = d.zona_id and h.activo
+       from drop_espacial d join producto p on p.id = d.producto_id join local l on l.id = coalesce(d.local_id, p.local_id)
        where d.recinto_id = $1 and now() between d.inicio and d.fin`,
       [recintoId],
-    );
-    const monedas = await many(
-      this.db,
-      `select h.id, h.codigo, h.puntos, z.piso, z.x + z.ancho / 2 as x, 330 as y, z.nombre as zona,
-              ($2::uuid is not null and exists (select 1 from reclamo_hito r where r.hito_id = h.id and r.cliente_id = $2 and r.fecha = $3::date)) as reclamada
-       from hito h join zona z on z.id = h.zona_id where h.recinto_id = $1 and h.activo`,
-      [recintoId, clienteId, fecha],
     );
     const eventos = await many(
       this.db,
@@ -105,7 +97,7 @@ export class RecintoService {
        where a.recinto_id = $1 and a.estado = 'aprobada' and a.fin > now() and bo(a.inicio)::date <= $2::date`,
       [recintoId, fecha],
     );
-    return { promociones, drops, monedas, eventos };
+    return { promociones, drops, eventos };
   }
 
   async zonaPorPunto(q: Queryable, recintoId: string, piso: string, x: number, y: number) {

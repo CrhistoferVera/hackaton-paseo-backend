@@ -803,6 +803,32 @@ create table ajuste_ia (
 );
 `,
   },
+  {
+    id: '008_sin_ar_e_info_paseo',
+    sql: /* sql */ `
+-- Sin realidad aumentada: se quitan los carteles (hitos) y sus monedas. Los Drops se reclaman desde la app.
+delete from nodo_ubicacion where tipo = 'hito';
+alter table nodo_ubicacion drop column if exists hito_id;
+alter table nodo_ubicacion drop constraint if exists nodo_ubicacion_tipo_check;
+alter table nodo_ubicacion add constraint nodo_ubicacion_tipo_check check (tipo in ('pasillo','local','entrada','escalera','ascensor','servicio'));
+drop table if exists reclamo_hito;
+drop table if exists hito;
+
+-- Información general del Paseo que Jarvis puede citar (medios de pago, devoluciones, accesos…).
+-- La administra el equipo del Paseo; Jarvis responde solo con lo que está aquí o en los datos vivos.
+create table info_paseo (
+  id uuid primary key default gen_random_uuid(),
+  recinto_id uuid not null references recinto(id),
+  tema text not null,
+  palabras_clave text[] not null default '{}',
+  respuesta text not null,
+  activo boolean not null default true,
+  actualizado_por uuid references usuario(id),
+  actualizado_en timestamptz not null default now()
+);
+create index info_paseo_recinto_idx on info_paseo (recinto_id) where activo;
+`,
+  },
 ];
 
 /** Tablas propias del sistema: el reinicio del seed borra solo estas, nunca otras de la misma base. */

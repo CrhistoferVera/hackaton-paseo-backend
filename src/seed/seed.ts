@@ -3,8 +3,8 @@
  * 40 locales con horarios, teléfonos y ~230 productos (con tiempos de preparación), una cuenta de
  * comercio por local, servicios del Paseo (baños, cajeros automáticos, lactancia…), eventos que se
  * repiten durante dos meses, promociones a toda hora, misiones, Drops activos y pasados, solicitudes
- * de Drop, clientes con perfiles distintos, visitas, compras, canjes, PaseoYa, parqueo, monedas AR,
- * búsquedas sin resultado y casos de fraude plantados.
+ * de Drop, clientes con perfiles distintos, visitas, compras, canjes, PaseoYa, parqueo, información
+ * general del Paseo para Jarvis, búsquedas sin resultado y casos de fraude plantados.
  *
  * Uso:  npm run seed            (solo si la base está vacía)
  *       npm run seed -- --reset (borra las tablas del sistema y vuelve a generar)
@@ -19,7 +19,7 @@ import { TABLAS_PROPIAS } from '../infra/db/migraciones.js';
 import { firmaCorta, hashPassword } from '../common/auth/tokens.js';
 import { codigoLegible, pinNumerico, secretoAleatorio } from '../common/util.js';
 import {
-  APELLIDOS, BUSQUEDAS_SIN_RESULTADO, CATEGORIAS, EVENTOS_ESPECIALES, EVENTOS_RECURRENTES, LOCALES, NOMBRES, PRODUCTOS, SERVICIOS, ZONAS, ZONAS_RESIDENCIA,
+  APELLIDOS, BUSQUEDAS_SIN_RESULTADO, CATEGORIAS, EVENTOS_ESPECIALES, EVENTOS_RECURRENTES, INFO_PASEO, LOCALES, NOMBRES, PRODUCTOS, SERVICIOS, ZONAS, ZONAS_RESIDENCIA,
 } from './catalogo.js';
 
 // ---------------------------------------------------------------- utilidades deterministas
@@ -164,7 +164,7 @@ async function main() {
     const adminId = usuarios[0][0] as string;
     const marketingId = usuarios[1][0] as string;
 
-    // -------------------------------------------------------------- reglas, recompensas, hitos, servicios
+    // -------------------------------------------------------------- reglas, recompensas, servicios, información del Paseo
     await q.query(
       `insert into regla_puntos (recinto_id, version, vigente, bs_por_punto, valor_punto_bs, multiplicadores_categoria, multiplicadores_horario, dias_vencimiento,
          niveles, bono_bienvenida, puntos_descubrimiento, puntos_visita_diaria, puntos_referido, puntos_hora_parqueo, creado_por)
@@ -208,13 +208,7 @@ async function main() {
         id, recintoId, nombre, desc, costo, localId, stock, tipo,
       ]);
     }
-    const hitos: { id: string; zona: string; codigo: string }[] = [];
-    for (const z of ZONAS) {
-      const id = randomUUID();
-      const codigo = `${z.piso}-${z.sector}`;
-      hitos.push({ id, zona: zonaId.get(codigo)!, codigo });
-      await q.query(`insert into hito (id, recinto_id, nombre, zona_id, codigo, puntos) values ($1,$2,$3,$4,$5,15)`, [id, recintoId, `Cartel ${z.nombre} · ${z.piso}`, zonaId.get(codigo), codigo]);
-    }
+    await insertarLote(q, 'info_paseo', ['recinto_id', 'tema', 'palabras_clave', 'respuesta', 'actualizado_por'], INFO_PASEO.map((i) => [recintoId, i.tema, i.claves, i.respuesta, adminId]));
     const zonaDePunto = (piso: string, x: number, y: number) =>
       ZONAS.find((z) => z.piso === piso && x >= z.x && x <= z.x + z.ancho && y >= z.y && y <= z.y + z.alto);
     await insertarLote(
@@ -330,14 +324,12 @@ async function main() {
     const filasCanje: unknown[][] = [];
     const filasBusqueda: unknown[][] = [];
     const filasAlerta: unknown[][] = [];
-    const filasHito: unknown[][] = [];
     const filasParqueo: unknown[][] = [];
     const filasFavorito: unknown[][] = [];
     type Lote = { id: string; restante: number };
     const lotes = new Map<string, Lote[]>();
     const saldo = new Map<string, number>();
     const zonaDeLocal = new Map<string, string>(locales.map((l) => [l.id, l.zona]));
-    const hitoDia = new Set<string>();
 
     const mov = (clienteId: string, tipo: string, puntos: number, en: Date, descripcion: string, localId: string | null = null, ref: string | null = null) => {
       const id = randomUUID();
@@ -431,17 +423,6 @@ async function main() {
             const gratis = prob(0.15) ? 1 : 0;
             filasParqueo.push([c.id, `T-${codigoLegible(6)}`, llegada, salida, min, gratis, gratis * 300, (horas - gratis) * 6, 'cerrado']);
             if (gratis) mov(c.id, 'parqueo', -300, salida, 'Hora de parqueo con puntos');
-          }
-        }
-        // Monedas AR: algunos recogen la del cartel de su zona
-        if (prob(0.12)) {
-          const hito = elegir(hitos);
-          const k = `${hito.id}-${c.id}-${off}`;
-          if (!hitoDia.has(k)) {
-            hitoDia.add(k);
-            filasHito.push([hito.id, c.id, instante(off, 0).toISOString().slice(0, 10), new Date(llegada.getTime() + 5 * 60_000)]);
-            mov(c.id, 'hito', 15, new Date(llegada.getTime() + 5 * 60_000), 'Moneda del cartel');
-            evento(c.seud, 'hito.reclamado', new Date(llegada.getTime() + 5 * 60_000), {}, null, hito.zona);
           }
         }
         for (let s = 0; s < paradas; s++) {
@@ -692,7 +673,6 @@ async function main() {
     await insertarLote(q, 'subpedido', ['id', 'pedido_id', 'local_id', 'estado', 'total_bs', 'codigo_retiro', 'pin', 'pago', 'confirmado_en', 'preparando_en', 'listo_en', 'entregado_en', 'puntos'], filasSub);
     await insertarLote(q, 'subpedido_item', ['id', 'subpedido_id', 'producto_id', 'nombre', 'cantidad', 'precio_bs'], filasItem);
     await insertarLote(q, 'reclamo_drop', ['drop_id', 'cliente_id', 'usado', 'creado_en'], filasReclamoDrop);
-    await insertarLote(q, 'reclamo_hito', ['hito_id', 'cliente_id', 'fecha', 'creado_en'], filasHito);
     await insertarLote(q, 'parqueo', ['cliente_id', 'ticket', 'entrada_en', 'salida_en', 'minutos', 'horas_gratis', 'puntos_usados', 'monto_bs', 'estado'], filasParqueo);
     await insertarLote(q, 'alerta_fraude', ['recinto_id', 'transaccion_id', 'cliente_id', 'local_id', 'empleado_id', 'regla', 'detalle', 'puntaje', 'estado', 'creado_en'], filasAlerta);
     await insertarLote(q, 'evento', ['recinto_id', 'id_seudonimo', 'tipo', 'payload', 'local_id', 'zona_id', 'creado_en'], filasEvento);

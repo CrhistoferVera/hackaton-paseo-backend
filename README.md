@@ -33,7 +33,8 @@ La API queda en `http://localhost:4000`.
 - Una cuenta de comercio por local.
 - 21 servicios del Paseo (baños, cajeros automáticos, wifi, lactancia, enfermería, objetos perdidos, mascotas…), que también son destinos de ruta.
 - 19 promociones repartidas para que a toda hora haya alguna activa, y unos 195 eventos (recurrentes y especiales) entre 30 días atrás y 45 adelante, con uno siempre en curso.
-- 2.500 clientes con perfiles distintos (oficinistas al mediodía, familias de fin de semana, jóvenes de tarde, ocasionales, dormidos): visitas, compras, canjes, PaseoYa, parqueo, monedas AR, Drops, búsquedas sin resultado y fraude plantado.
+- 2.500 clientes con perfiles distintos (oficinistas al mediodía, familias de fin de semana, jóvenes de tarde, ocasionales, dormidos): visitas, compras, canjes, PaseoYa, parqueo, Drops, búsquedas sin resultado y fraude plantado.
+- Información general del Paseo para Jarvis (medios de pago, devoluciones, facturas, fumar, seguridad). Son textos de ejemplo: revísalos en `/admin/informacion` antes de usarlos en serio.
 - Solicitudes de Drop y propuestas de eventos pendientes.
 - María (la clienta demo) con un pedido listo, otro en preparación, el parqueo abierto y un cupón vigente.
 
@@ -66,7 +67,7 @@ src/
 │  ├─ fidelizacion/    libro mayor, reglas versionadas, niveles, vencimientos, economía
 │  ├─ comercio/        compras en caja, factura SIAT, movimientos del local, CSV
 │  ├─ recompensas/     catálogo, cupones de un solo uso, validación en el local
-│  ├─ participacion/   promociones, misiones (con IA), hitos AR y Drops espaciales
+│  ├─ participacion/   promociones, misiones (con IA), Drops y eventos (con QR de asistencia)
 │  ├─ presencia/       visitas, check-ins, parqueo, geocerca
 │  ├─ recinto/         plano, locales, categorías, buscador, QR de puerta en PDF
 │  ├─ paseoya/         catálogo, pedidos multi-local, máquina de estados, retiro
@@ -95,7 +96,7 @@ Decisiones que sostienen los requisitos no funcionales:
 | `PPR:<código>.<firma>` (o PIN de 4 dígitos) | Retiro PaseoYa | Local |
 | `PPL:<código>` | Puerta de un local | Cliente (check-in) |
 | `PPE:<puerta>` | Entrada del Paseo | Cliente («Llegué») |
-| `PPH:<zona>` | Cartel de hito AR | Cliente (moneda o Drop) |
+| `PPA:<id del evento>` | QR de asistencia de un evento (PDF desde el panel) | Cliente (suma los puntos del evento) |
 | `PPK:<ticket>` | Ticket de parqueo | Cliente |
 | Factura SIAT | URL en línea o formato con código de control | Cliente |
 
@@ -109,14 +110,14 @@ Jarvis no espera a que le pregunten: reacciona a lo que hace el cliente y le man
 
 | Lo que pasa | Lo que dice Jarvis |
 | --- | --- |
-| Compra en PaseoYa | Ruta de recojo; si hay un Drop o una moneda a menos de 50 m de desvío, lo hace pasar por ahí |
-| El local pone su comida en «Preparando» | Itinerario para la espera: un cartel con moneda en una zona de poco tráfico, al alcance en esos minutos |
+| Compra en PaseoYa | Ruta de recojo; si hay un local con Drop a menos de 50 m de desvío, lo hace pasar por ahí |
+| El local pone su comida en «Preparando» | Itinerario para la espera: un Drop o una promoción en un pasillo con poco tráfico, al alcance en esos minutos |
 | Pedido listo | Cuántos metros faltan y el primer paso |
-| Escanea un QR (puerta, cartel) | Venta cruzada con lo que hay cerca |
+| Escanea un QR (puerta de un local) | Venta cruzada con lo que hay cerca |
 | Llega al Paseo | Bienvenida con su pedido listo o la mejor oferta cercana |
 | El admin lanza un Drop | Aviso a quienes están a menos de 120 m |
 
-**Cómo decide.** El edificio se guarda como un grafo de nodos de ubicación: pasillos, locales, carteles, accesos, escalera y ascensor (`orientacion/`). La posición del cliente es la última prueba de presencia: QR de puerta, cartel, entrada, compra o retiro. Las rutas salen de Dijkstra sobre ese grafo, con indicaciones para escuchar mientras se camina. Al modelo solo le llega lo que está a pocos metros caminando: el «contexto cercano».
+**Cómo decide.** El edificio se guarda como un grafo de nodos de ubicación: pasillos, locales, servicios, accesos, escalera y ascensor (`orientacion/`). La posición del cliente es la última prueba de presencia: QR de puerta, entrada, compra o retiro (o «Estoy en…» tocando el mapa). Las rutas salen de Dijkstra sobre ese grafo, con indicaciones para escuchar mientras se camina. Al modelo solo le llega lo que está a pocos metros caminando: el «contexto cercano».
 
 **Quién redacta.** Un modelo local en Ollama (`qwen2.5:1.5b` por defecto) reescribe un borrador armado con datos reales. Medido en esta máquina, la mediana es de unos 0,7 s con el modelo cargado. La respuesta se descarta y se usa el borrador si:
 - tarda más de `JARVIS_TIMEOUT_MS`,
@@ -140,13 +141,16 @@ El celular también puede mandar eventos por el socket: `evento_usuario` con `es
 `POST /cliente/jarvis` responde preguntas con datos consultados en el momento: promociones activas o de más tarde, eventos (hoy, mañana, fin de semana), precios y stock, tiempos de preparación, horarios y si un local está abierto, puntos que ganarías con un monto, dónde ganar más puntos, misiones, Drops, parqueo, pedidos PaseoYa, servicios (baños, cajeros automáticos, wifi, lactancia, enfermería, objetos perdidos, mascotas) y rutas.
 
 - **Memoria** (`conversacion_jarvis`): entiende seguimientos como «¿y cuánto tarda?», «¿y la óptica?» o «sí, llévame». La conversación vive 45 minutos sin hablar; `GET /cliente/jarvis/historial` la retoma y `POST /cliente/jarvis/reiniciar` empieza otra.
-- **Cómo entiende:** reglas, un índice de nombres del Paseo que tolera errores del reconocedor («napoly» → Napoli) y, si nada encaja, el modelo local clasifica.
-- **Cómo responde:** cada respuesta se arma con datos reales y el modelo local solo la vuelve natural; si cambia una cifra, agrega un saludo o se alarga, se usa la respuesta original.
-- **Preguntas poco comunes:** se responden solo con los datos del Paseo; si el modelo menciona una cifra que no está en los datos, se descarta.
+- **Cómo entiende:** reglas, un índice de nombres del Paseo que tolera errores del reconocedor («napoly» → Napoli) y un buscador de evidencia (`jarvis/buscador.ts`). El buscador marca qué palabras de la pregunta respaldan los datos (locales, productos, servicios, zonas, ascensor, información general) y cuáles no («zapatillas **nike**», «comida **vegana**», «**gimnasio**»).
+- **No inventa:** si algo no está en los datos, Jarvis lo dice («No encontré «spa» en el Paseo…», «No tengo la cartelera de películas…») y la pregunta queda en `/admin/informacion` para que la administración la complete. Preguntas ajenas al Paseo (clima, noticias, cultura general) no se responden de memoria. El modelo local nunca genera respuestas: solo elige una intención entre las que consultan datos.
+- **Cómo responde:** cada respuesta se arma con datos reales y el modelo local solo la vuelve natural. Se usa la respuesta original si la versión del modelo cambia una cifra, quita o pone una negación, agrega un nombre propio o palabras de contenido nuevas, agrega un saludo o se alarga.
+- **Información general** (`info_paseo`): medios de pago, devoluciones, normas. La administra el equipo en `/admin/info-paseo` (web: «Información para Jarvis») y Jarvis la cita tal cual.
 
 ### Jarvis escucha (voz a texto local)
 
-`POST /cliente/jarvis/voz` (multipart, campo `audio`) recibe lo que grabó el celular o el navegador (webm, m4a, ogg, wav). ffmpeg lo decodifica y Whisper (`onnx-community/whisper-small` sobre ONNX, en el propio servidor) lo transcribe en unos 2 a 3 segundos. Si se pide, Jarvis responde en la misma llamada.
+`POST /cliente/jarvis/voz` (multipart, campo `audio`) recibe lo que grabó el celular o el navegador (webm, m4a, ogg, wav). ffmpeg lo decodifica y Whisper (`onnx-community/whisper-small` sobre ONNX, en el propio servidor) lo transcribe en unos 2,5 segundos con 4 hilos (`WHISPER_HILOS`). Si se pide, Jarvis responde en la misma llamada. El asistente del admin usa lo mismo en `POST /admin/asistente/voz` y responde en voz alta con `POST /admin/asistente/hablar`.
+
+Whisper corre en un proceso hijo (`jarvis/oido.worker.ts`): la voz de Jarvis (sherpa-onnx) trae otra librería ONNX y, en el mismo proceso de Windows, la que cargaba segunda fallaba («se está preparando» para siempre). Si el proceso se cae, se reinicia solo.
 
 El audio no se guarda ni sale de la máquina. El modelo se descarga una vez a `.data/modelos`. Se reemplazó el reconocedor del navegador, que enviaba el audio a Google y fallaba con «Network».
 

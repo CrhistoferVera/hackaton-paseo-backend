@@ -13,7 +13,7 @@ import { RecintoService } from './recinto/recinto.service.js';
 import { AdminRecintoController, LocalRecintoController, RecintoController } from './recinto/recinto.controller.js';
 import { PromocionesService } from './participacion/promociones.service.js';
 import { MisionesService } from './participacion/misiones.service.js';
-import { ExperienciasService } from './participacion/experiencias.service.js';
+import { DropsService } from './participacion/drops.service.js';
 import { EventosService } from './participacion/eventos.service.js';
 import { ComercioParticipacionController, EventosAdminController, EventosClienteController, ParticipacionAdminController, ParticipacionClienteController, PromocionesLocalController } from './participacion/participacion.controller.js';
 import { PresenciaService } from './presencia/presencia.service.js';
@@ -60,7 +60,7 @@ export class PresenciaModule {}
 @Module({
   imports: [FidelizacionModule, PromocionesModule, PresenciaModule],
   controllers: [ParticipacionClienteController, PromocionesLocalController, ParticipacionAdminController, ComercioParticipacionController, EventosAdminController, EventosClienteController],
-  providers: [MisionesService, ExperienciasService, EventosService],
+  providers: [MisionesService, DropsService, EventosService],
   exports: [MisionesService, EventosService],
 })
 export class ParticipacionModule {}
