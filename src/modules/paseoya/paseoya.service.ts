@@ -85,7 +85,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
     return many(
       this.db,
       `select l.id, l.nombre, l.descripcion, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
-              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.activo,
+              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.fotos, l.activo,
               c.id as categoria_id, c.nombre as categoria, c.ambito,
               (select count(*)::int from producto p where p.local_id = l.id and p.activo and
                 (p.stock > 0 or exists (select 1 from producto_variante v where v.producto_id = p.id and v.activo and v.stock > 0))) as total_productos
@@ -96,6 +96,47 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
          and ($3::uuid is null or c.id = $3)
        order by (select count(*)::int from producto p where p.local_id = l.id and p.activo) desc, l.nombre`,
       [recintoId, amb, f?.categoriaId ?? null],
+    );
+  }
+
+  async local(recintoId: string, id: string) {
+    const l = await one<any>(
+      this.db,
+      `select l.id, l.nombre, l.descripcion, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
+              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.fotos, l.activo,
+              c.id as categoria_id, c.nombre as categoria, c.ambito
+       from local l
+       join categoria c on c.id = l.categoria_id
+       where l.id = $1 and l.recinto_id = $2 and l.activo`,
+      [id, recintoId],
+    );
+    if (!l) throw new NotFoundException('Local no encontrado');
+    const promos = await many<any>(
+      this.db,
+      `select id, titulo, descripcion, tipo, costo_puntos, inicio, fin
+       from promocion
+       where local_id = $1 and estado = 'aprobada'
+         and (inicio is null or inicio <= now())
+         and (fin is null or fin >= now())
+       order by creado_en desc`,
+      [id],
+    );
+    return { ...l, promociones: promos };
+  }
+
+  async promocionesPaseoYa(recintoId: string, tipo?: 'food' | 'shop') {
+    return many(
+      this.db,
+      `select pr.id, pr.titulo, pr.imagen_url, pr.tipo, pr.negocio_id, pr.activo, pr.orden, pr.fecha_inicio, pr.fecha_fin, pr.created_at,
+              l.nombre as negocio_nombre, l.piso as negocio_piso
+       from promociones pr
+       left join local l on l.id = pr.negocio_id
+       where pr.activo = true
+         and ($1::text is null or pr.tipo = $1)
+         and (pr.fecha_inicio is null or pr.fecha_inicio <= now())
+         and (pr.fecha_fin is null or pr.fecha_fin >= now())
+       order by pr.orden asc, pr.created_at desc`,
+      [tipo ?? null],
     );
   }
 
@@ -150,7 +191,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
   async crearPedido(
     recintoId: string,
     clienteId: string,
-    d: { items: ItemPedido[]; tipo?: 'comida' | 'retail'; fechaEstimadaRetiro?: string; fecha_estimada_retiro?: string; pago: 'en_local' | 'qr_anticipado' },
+    d: { items: ItemPedido[]; tipo?: 'comida' | 'retail'; fechaEstimadaRetiro?: string; fecha_estimada_retiro?: string; pago?: 'en_local' | 'qr_anticipado' },
   ) {
     if (!d.items.length) throw new BadRequestException('Tu carrito está vacío');
     const r = await this.db.tx(async (q) => {
@@ -214,7 +255,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
         const base = codigoLegible(8);
         const sub = g.items.reduce((a,i) => a+i.precio*i.cantidad,0);
         const sp = await one<any>(q, 'insert into subpedido (pedido_id,local_id,total_bs,codigo_retiro,pin,pago,tiempo_preparacion_min) values ($1,$2,$3,$4,$5,$6,$7) returning *',
-          [pedido.id,localId,sub,`${base}.${firmaCorta(base)}`,pinNumerico(4),d.pago,tipo === 'comida' ? g.minutos : null]);
+          [pedido.id,localId,sub,`${base}.${firmaCorta(base)}`,pinNumerico(4),d.pago ?? 'en_local',tipo === 'comida' ? g.minutos : null]);
         for (const i of g.items) {
           const item = await one<any>(q, 'insert into subpedido_item (subpedido_id,producto_id,nombre,cantidad,precio_bs,drop_id,variante_id,variante_detalle) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
             [sp.id,i.productoId,i.nombre,i.cantidad,i.precio,i.dropId ?? null,i.variantes[0]?.id ?? null,i.detalle || null]);

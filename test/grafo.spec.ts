@@ -48,7 +48,7 @@ describe('Grafo del edificio', () => {
     const { mapa, ady } = cargar();
     const r = caminoMasCorto(mapa, ady, 'N1:entrada:norte', 'local:burger')!;
     expect(r.nodos.some((n) => n.piso === 'T')).toBe(true);
-    expect(r.pasos.filter((p) => /sube a/.test(p))).toEqual(['Usa la escalera central y sube a las Terrazas.']);
+    expect(r.pasos.filter((p) => /baja a|sube a/.test(p))).toEqual(['Usa la escalera central y baja a Planta baja.']);
     expect(r.pasos.at(-1)).toMatch(/^Llegas a Burger House/);
   });
 
