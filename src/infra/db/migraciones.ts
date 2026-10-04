@@ -803,6 +803,52 @@ create table ajuste_ia (
 );
 `,
   },
+  {
+    id: '008_carritos_variantes',
+    sql: /* sql */ `
+create table producto_grupo_variante (
+  id uuid primary key default gen_random_uuid(),
+  producto_id uuid not null references producto(id) on delete cascade,
+  titulo text not null,
+  orden int not null default 0,
+  activo boolean not null default true,
+  unique (id, producto_id)
+);
+create table producto_variante (
+  id uuid primary key default gen_random_uuid(),
+  grupo_id uuid not null,
+  producto_id uuid not null references producto(id) on delete cascade,
+  nombre text not null,
+  precio_bs numeric(12,2) check (precio_bs >= 0),
+  stock int not null default 0 check (stock >= 0),
+  foto_url text,
+  activo boolean not null default true,
+  foreign key (grupo_id, producto_id) references producto_grupo_variante(id, producto_id) on delete cascade
+);
+create index producto_variante_producto_idx on producto_variante(producto_id);
+alter table subpedido_item add column variante_id uuid references producto_variante(id);
+alter table subpedido_item add column variante_detalle text;
+create table subpedido_item_variante (
+  item_id uuid not null references subpedido_item(id) on delete cascade,
+  variante_id uuid not null references producto_variante(id),
+  primary key (item_id, variante_id)
+);
+alter table pedido add column tipo text;
+update pedido p set tipo = case when exists (
+  select 1 from subpedido s join subpedido_item i on i.subpedido_id=s.id
+  join producto pr on pr.id=i.producto_id join categoria c on c.id=pr.categoria_id
+  where s.pedido_id=p.id and c.ambito='comida'
+) then 'comida' else 'retail' end;
+alter table pedido alter column tipo set not null;
+alter table pedido add constraint pedido_tipo_check check (tipo in ('comida','retail'));
+alter table pedido add column fecha_estimada_retiro date;
+update pedido set fecha_estimada_retiro=(franja_inicio at time zone 'America/La_Paz')::date where tipo='retail';
+alter table pedido add constraint pedido_fecha_retail_check check (tipo <> 'retail' or fecha_estimada_retiro is not null);
+alter table pedido alter column franja_inicio drop not null;
+alter table pedido alter column franja_fin drop not null;
+alter table subpedido add column tiempo_preparacion_min int;
+`,
+  },
 ];
 
 /** Tablas propias del sistema: el reinicio del seed borra solo estas, nunca otras de la misma base. */

@@ -8,11 +8,20 @@ import { guardarImagen, type ArchivoSubido } from '../../common/archivos.js';
 import { PaseoYaService } from './paseoya.service.js';
 
 const PedidoSchema = z.object({
-  items: z.array(z.object({ productoId: zUuid, cantidad: z.number().int().min(1).max(20), dropId: zUuid.nullable().optional() })).min(1),
-  franjaInicio: z.string().datetime(),
-  franjaFin: z.string().datetime(),
+  items: z.array(z.object({ productoId: zUuid, cantidad: z.number().int().min(1).max(20), dropId: zUuid.nullable().optional(), varianteId: zUuid.optional(), varianteIds: z.array(zUuid).max(12).optional() })).min(1),
+  tipo: z.enum(['comida', 'retail']).optional(),
+  fechaEstimadaRetiro: z.string().optional(),
+  fecha_estimada_retiro: z.string().optional(),
   pago: z.enum(['en_local', 'qr_anticipado']).default('en_local'),
 });
+const VariantesSchema = z.array(z.object({
+  id: zUuid.optional(), titulo: z.string().trim().min(1).max(80),
+  opciones: z.array(z.object({
+    id: zUuid.optional(), nombre: z.string().trim().min(1).max(80),
+    stock: z.number().int().min(0), precioBs: z.number().nonnegative().nullable().optional(),
+    fotoUrl: z.string().nullable().optional(), activo: z.boolean().optional(),
+  })).min(1).max(100),
+})).max(12);
 const ProductoSchema = z.object({
   nombre: z.string().min(2),
   descripcion: z.string().optional(),
@@ -23,6 +32,7 @@ const ProductoSchema = z.object({
   activo: z.boolean().optional(),
   tiempoPreparacionMin: z.number().int().min(0).max(240).nullable().optional(),
   etiquetas: z.array(z.string().min(2).max(30)).max(12).optional(),
+  variantes: VariantesSchema.optional(),
 });
 const FavoritoSchema = z.object({ productoId: zUuid.optional(), localId: zUuid.optional() });
 const CodigoSchema = z.object({ codigo: z.string().min(4) });
@@ -111,6 +121,16 @@ export class PaseoYaClienteController {
 export class PaseoYaLocalController {
   constructor(private readonly svc: PaseoYaService) {}
 
+  @Get('productos/:id/variantes')
+  variantes(@SesionActual() s: Sesion, @Param('id') id: string) {
+    return this.svc.variantesDelLocal(s, id);
+  }
+
+  @Post('productos/:id/variantes')
+  guardarVariantes(@SesionActual() s: Sesion, @Param('id') id: string, @Body(new ZodPipe(VariantesSchema)) d: z.infer<typeof VariantesSchema>) {
+    return this.svc.guardarVariantes(s, id, d);
+  }
+
   @Get('productos')
   productos(@SesionActual() s: Sesion) {
     return this.svc.productosDelLocal(s.localId!);
@@ -147,8 +167,8 @@ export class PaseoYaLocalController {
   }
 
   @Post('pedidos/:id/estado')
-  avanzar(@SesionActual() s: Sesion, @Param('id') id: string, @Body(new ZodPipe(z.object({ estado: z.enum(['confirmado', 'preparando', 'listo']) }))) d: { estado: 'confirmado' | 'preparando' | 'listo' }) {
-    return this.svc.avanzar(s, id, d.estado);
+  avanzar(@SesionActual() s: Sesion, @Param('id') id: string, @Body(new ZodPipe(z.object({ estado: z.enum(['confirmado', 'preparando', 'listo']), tiempoPreparacionMin: z.number().int().min(1).max(240).optional() }))) d: { estado: 'confirmado' | 'preparando' | 'listo'; tiempoPreparacionMin?: number }) {
+    return this.svc.avanzar(s, id, d.estado, d.tiempoPreparacionMin);
   }
 
   @Post('retiros/consultar')

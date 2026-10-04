@@ -13,12 +13,14 @@ import { RecintoService } from '../recinto/recinto.service.js';
 import { enmascararNombre } from '../identidad/identidad.service.js';
 import { ETIQUETA_ESTADO, EstadoSubpedido, puedeTransicionar } from './domain/estado-subpedido.js';
 
-const MINUTOS_GRACIA_RETIRO = 30;
+import { fechaRetail, precioVariantes, type GrupoVariante } from './domain/variantes.js';
 
 export interface ItemPedido {
   productoId: string;
   cantidad: number;
   dropId?: string | null;
+  varianteId?: string;
+  varianteIds?: string[];
 }
 
 export interface DatosProducto {
@@ -31,6 +33,7 @@ export interface DatosProducto {
   activo?: boolean;
   tiempoPreparacionMin?: number | null;
   etiquetas?: string[];
+  variantes?: GrupoVariante[];
 }
 
 /** PaseoYa: marketplace con retiro presencial obligatorio (reto 3 integrado). */
@@ -64,13 +67,15 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
   categorias(ambito?: string) {
     return many(
       this.db,
-      `select c.*, (select count(*)::int from producto p join local l on l.id = p.local_id where p.categoria_id = c.id and p.activo and l.activo and p.stock > 0) as productos
+      `select c.*, (select count(*)::int from producto p join local l on l.id = p.local_id where p.categoria_id = c.id and p.activo and l.activo and (p.stock > 0 or exists (select 1 from producto_variante v where v.producto_id=p.id and v.activo and v.stock>0))) as productos
        from categoria c where ($1::text is null or c.ambito = $1) order by c.orden, c.nombre`,
-      [ambito ?? null],
+      [ambito === 'retail' ? 'tiendas' : ambito ?? null],
     );
   }
 
-  private readonly selectProducto = `select p.id, p.nombre, p.descripcion, p.precio_bs, p.stock, p.foto_url, p.destacado_hasta, p.categoria_id, p.tiempo_preparacion_min, p.etiquetas,
+  private readonly selectProducto = `select p.id, p.nombre, p.descripcion, p.precio_bs, coalesce((select min(gs.stock)::int from
+      (select coalesce(sum(v.stock) filter (where v.activo),0) stock from producto_grupo_variante g
+       left join producto_variante v on v.grupo_id=g.id where g.producto_id=p.id and g.activo group by g.id) gs),p.stock) as stock, p.foto_url, p.destacado_hasta, p.categoria_id, p.tiempo_preparacion_min, p.etiquetas,
       c.nombre as categoria, c.ambito, l.id as local_id, l.nombre as local, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
       l.horario_apertura, l.horario_cierre
     from producto p join local l on l.id = p.local_id join categoria c on c.id = p.categoria_id`;
@@ -82,7 +87,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
        where l.recinto_id = $1 and p.activo and l.activo
          and ($2::uuid is null or p.categoria_id = $2) and ($3::text is null or c.ambito = $3) and ($4::uuid is null or l.id = $4)
        order by (p.destacado_hasta >= current_date) desc nulls last, p.nombre limit 200`,
-      [recintoId, f.categoriaId ?? null, f.ambito ?? null, f.localId ?? null],
+      [recintoId, f.categoriaId ?? null, f.ambito === 'retail' ? 'tiendas' : f.ambito ?? null, f.localId ?? null],
     );
     if (clienteId && f.categoriaId) {
       await this.telemetria.registrarSuelto({ recintoId, clienteId, tipo: 'paseoya.categoria_vista', payload: { categoria_id: f.categoriaId } });
@@ -119,90 +124,94 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
     if (!p) throw new NotFoundException('Producto no encontrado');
     if (clienteId) await this.telemetria.registrarSuelto({ recintoId, clienteId, tipo: 'paseoya.producto_visto', localId: (p as any).local_id, payload: { producto_id: id } });
     const favorito = clienteId ? await one(this.db, 'select id from favorito where cliente_id = $1 and producto_id = $2', [clienteId, id]) : null;
-    return { ...p, favorito: !!favorito };
+    return { ...p, tipo: (p as any).ambito === 'comida' ? 'comida' : 'retail', variantes: await this.leerVariantes(this.db, id), favorito: !!favorito };
   }
 
   // ------------------------------------------------------------------ pedidos del cliente (HU-Y04 a Y09, Y11)
   async crearPedido(
     recintoId: string,
     clienteId: string,
-    d: { items: ItemPedido[]; franjaInicio: string; franjaFin: string; pago: 'en_local' | 'qr_anticipado' },
+    d: { items: ItemPedido[]; tipo?: 'comida' | 'retail'; fechaEstimadaRetiro?: string; fecha_estimada_retiro?: string; pago: 'en_local' | 'qr_anticipado' },
   ) {
     if (!d.items.length) throw new BadRequestException('Tu carrito está vacío');
-    const ini = new Date(d.franjaInicio);
-    const fin = new Date(d.franjaFin);
-    if (!(fin > ini)) throw new BadRequestException('La franja de retiro no es válida');
-    if (ini.getTime() < Date.now() - 5 * 60_000) throw new BadRequestException('La franja de retiro ya pasó');
-
     const r = await this.db.tx(async (q) => {
-      const ids = d.items.map((i) => i.productoId);
-      const prods = await many<any>(
-        q,
-        `select p.*, l.nombre as local, l.horario_apertura, l.horario_cierre, l.activo as local_activo
-         from producto p join local l on l.id = p.local_id where p.id = any($1::uuid[]) and l.recinto_id = $2 for update of p`,
-        [ids, recintoId],
-      );
-      const mapa = new Map(prods.map((p) => [p.id, p]));
-      const porLocal = new Map<string, { local: string; items: (ItemPedido & { precio: number; nombre: string })[]; apertura: string; cierre: string }>();
+      const prods = await many<any>(q,
+        `select p.*, c.ambito, l.nombre as local, l.activo as local_activo from producto p
+         join local l on l.id=p.local_id join categoria c on c.id=p.categoria_id
+         where p.id=any($1::uuid[]) and l.recinto_id=$2 order by p.id for update of p`,
+        [d.items.map(i => i.productoId), recintoId]);
+      const tipos = new Set(prods.map(p => p.ambito === 'comida' ? 'comida' : 'retail'));
+      if (tipos.size > 1) throw new BadRequestException('No se pueden combinar productos de comida y retail en un mismo pedido');
+      const tipo = prods[0]?.ambito === 'comida' ? 'comida' : 'retail';
+      if (d.tipo && d.tipo !== tipo) throw new BadRequestException('El tipo del pedido no corresponde a sus productos');
+      const fecha = tipo === 'retail' ? fechaRetail(d.fechaEstimadaRetiro ?? d.fecha_estimada_retiro) : null;
+      const mapa = new Map(prods.map(p => [p.id,p]));
+      type Linea = ItemPedido & { precio: number; nombre: string; detalle: string; variantes: any[] };
+      const porLocal = new Map<string, { items: Linea[]; minutos: number | null }>();
       for (const it of d.items) {
+        if (!Number.isInteger(it.cantidad) || it.cantidad < 1 || it.cantidad > 20) throw new BadRequestException('Cantidad no válida');
         const p = mapa.get(it.productoId);
         if (!p || !p.activo || !p.local_activo) throw new BadRequestException('Un producto del carrito ya no está disponible');
-        if (p.stock < it.cantidad) throw new BadRequestException(`Solo quedan ${p.stock} unidades de ${p.nombre}`);
-        let precio = Number(p.precio_bs);
+        const grupos = await this.leerVariantes(q, p.id);
+        const ids = it.varianteIds ?? (it.varianteId ? [it.varianteId] : []);
+        if (new Set(ids).size !== ids.length) throw new BadRequestException('No repitas una variante');
+        const opciones = grupos.flatMap(g => g.opciones);
+        const elegidas = ids.map(id => opciones.find(v => v.id === id));
+        if (elegidas.some(v => !v || !v.activo) || grupos.some(g => elegidas.filter(v => v?.grupo_id === g.id).length !== 1) || ids.length !== grupos.length) {
+          throw new BadRequestException('Selecciona una opción disponible de cada grupo de variantes');
+        }
+        let precio = precioVariantes(Number(p.precio_bs), elegidas);
+        if (precio < 0) throw new BadRequestException('La combinación de precios de variantes no es válida');
         if (it.dropId) {
-          const drop = await one<any>(
-            q,
-            `select d.precio_especial from drop_espacial d join reclamo_drop r on r.drop_id = d.id
-             where d.id = $1 and d.producto_id = $2 and r.cliente_id = $3 and not r.usado and d.fin > now()`,
-            [it.dropId, p.id, clienteId],
-          );
+          const drop = await one<any>(q, `select d.precio_especial from drop_espacial d join reclamo_drop r on r.drop_id=d.id
+            where d.id=$1 and d.producto_id=$2 and r.cliente_id=$3 and not r.usado and d.fin>now() for update of r`, [it.dropId,p.id,clienteId]);
           if (!drop) throw new BadRequestException('El precio especial del Drop ya no está disponible');
-          precio = Number(drop.precio_especial);
-          await q.query('update reclamo_drop set usado = true where drop_id = $1 and cliente_id = $2', [it.dropId, clienteId]);
+          precio = Math.round((precio + Number(drop.precio_especial) - Number(p.precio_bs))*100)/100;
+          if (precio < 0) throw new BadRequestException('El Drop no es compatible con estas variantes');
+          await q.query('update reclamo_drop set usado=true where drop_id=$1 and cliente_id=$2',[it.dropId,clienteId]);
         }
-        type Grupo = { local: string; items: (ItemPedido & { precio: number; nombre: string })[]; apertura: string; cierre: string };
-        const g: Grupo = porLocal.get(p.local_id) ?? { local: p.local, items: [], apertura: p.horario_apertura, cierre: p.horario_cierre };
-        g.items.push({ ...it, precio, nombre: p.nombre });
-        porLocal.set(p.local_id, g);
-      }
-      if (d.pago === 'qr_anticipado' && porLocal.size > 1) {
-        throw new BadRequestException('El pago anticipado por QR solo está disponible para pedidos de un solo local');
-      }
-      // La franja debe caer dentro del horario de cada local (hora boliviana)
-      const hhmm = (x: Date) => new Date(x.getTime() - 4 * 3600_000).toISOString().slice(11, 16);
-      for (const g of porLocal.values()) {
-        if (hhmm(ini) < String(g.apertura).slice(0, 5) || hhmm(fin) > String(g.cierre).slice(0, 5)) {
-          throw new BadRequestException(`${g.local} atiende de ${String(g.apertura).slice(0, 5)} a ${String(g.cierre).slice(0, 5)}`);
+        // El UPDATE condicional evita sobreventas incluso con líneas repetidas.
+        if (elegidas.length) {
+          for (const v of elegidas) {
+            const stock = await one(q, 'update producto_variante set stock=stock-$2 where id=$1 and stock >= $2 returning id',[v.id,it.cantidad]);
+            if (!stock) throw new BadRequestException(`Stock insuficiente para ${p.nombre}: ${v.nombre}`);
+          }
+        } else {
+          const stock = await one(q,'update producto set stock=stock-$2 where id=$1 and stock >= $2 returning id',[p.id,it.cantidad]);
+          if (!stock) throw new BadRequestException(`Stock insuficiente para ${p.nombre}`);
         }
+        const g = porLocal.get(p.local_id) ?? { items: [], minutos: null };
+        if (p.tiempo_preparacion_min != null) g.minutos = Math.max(g.minutos ?? 0, p.tiempo_preparacion_min);
+        g.items.push({ ...it, precio, nombre:p.nombre, variantes:elegidas,
+          detalle: grupos.map(g => `${g.titulo}: ${elegidas.find(v => v.grupo_id === g.id).nombre}`).join(' | ') });
+        porLocal.set(p.local_id,g);
       }
-      const total = [...porLocal.values()].reduce((a, g) => a + g.items.reduce((b, i) => b + i.precio * i.cantidad, 0), 0);
-      const pedido = await one<any>(
-        q,
-        `insert into pedido (recinto_id, codigo, cliente_id, total_bs, franja_inicio, franja_fin) values ($1,$2,$3,$4,$5,$6) returning *`,
-        [recintoId, `P-${codigoLegible(6)}`, clienteId, total, ini, fin],
-      );
-      for (const [localId, g] of porLocal) {
-        const sub = g.items.reduce((b, i) => b + i.precio * i.cantidad, 0);
+      if (d.pago === 'qr_anticipado' && porLocal.size > 1) throw new BadRequestException('El pago anticipado por QR solo está disponible para pedidos de un solo local');
+      const total = [...porLocal.values()].reduce((a,g) => a+g.items.reduce((b,i) => b+i.precio*i.cantidad,0),0);
+      const pedido = await one<any>(q, 'insert into pedido (recinto_id,codigo,cliente_id,total_bs,tipo,fecha_estimada_retiro) values ($1,$2,$3,$4,$5,$6) returning *',
+        [recintoId,`P-${codigoLegible(6)}`,clienteId,total,tipo,fecha]);
+      const avisos: { localId: string; subpedidoId: string }[] = [];
+      for (const [localId,g] of porLocal) {
         const base = codigoLegible(8);
-        const s = await one<any>(
-          q,
-          `insert into subpedido (pedido_id, local_id, total_bs, codigo_retiro, pin, pago) values ($1,$2,$3,$4,$5,$6) returning *`,
-          [pedido.id, localId, sub, `${base}.${firmaCorta(base)}`, pinNumerico(4), d.pago],
-        );
+        const sub = g.items.reduce((a,i) => a+i.precio*i.cantidad,0);
+        const sp = await one<any>(q, 'insert into subpedido (pedido_id,local_id,total_bs,codigo_retiro,pin,pago,tiempo_preparacion_min) values ($1,$2,$3,$4,$5,$6,$7) returning *',
+          [pedido.id,localId,sub,`${base}.${firmaCorta(base)}`,pinNumerico(4),d.pago,tipo === 'comida' ? g.minutos : null]);
         for (const i of g.items) {
-          await q.query(`insert into subpedido_item (subpedido_id, producto_id, nombre, cantidad, precio_bs, drop_id) values ($1,$2,$3,$4,$5,$6)`, [
-            s.id, i.productoId, i.nombre, i.cantidad, i.precio, i.dropId ?? null,
-          ]);
-          await q.query('update producto set stock = stock - $2 where id = $1', [i.productoId, i.cantidad]);
+          const item = await one<any>(q, 'insert into subpedido_item (subpedido_id,producto_id,nombre,cantidad,precio_bs,drop_id,variante_id,variante_detalle) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
+            [sp.id,i.productoId,i.nombre,i.cantidad,i.precio,i.dropId ?? null,i.variantes[0]?.id ?? null,i.detalle || null]);
+          for (const v of i.variantes) await q.query('insert into subpedido_item_variante (item_id,variante_id) values ($1,$2)',[item.id,v.id]);
         }
-        setTimeout(() => this.rt.aLocal(localId, 'pedido', { tipo: 'nuevo', subpedidoId: s.id }), 50);
-        await this.telemetria.registrar(q, { recintoId, clienteId, tipo: 'pedido.creado', localId, payload: { total_bs: sub, items: g.items.length } });
+        avisos.push({localId,subpedidoId:sp.id});
+        await this.telemetria.registrar(q,{recintoId,clienteId,tipo:'pedido.creado',localId,payload:{total_bs:sub,items:g.items.length}});
       }
-      const regla = await this.fidelizacion.reglaVigente(q, recintoId);
-      return { pedidoId: pedido.id, codigo: pedido.codigo, totalBs: total, puntosEstimados: Math.floor(total / Number(regla.bs_por_punto)) };
+      const regla = await this.fidelizacion.reglaVigente(q,recintoId);
+      return { pedidoId:pedido.id,codigo:pedido.codigo,totalBs:total,puntosEstimados:Math.floor(total/Number(regla.bs_por_punto)),avisos };
     });
-    this.bus.publicar('pedido.creado', { recintoId, clienteId, pedidoId: r.pedidoId });
-    return { ...r, detalle: await this.pedido(clienteId, r.pedidoId) };
+    // Publicar solamente después del commit: nunca anunciar pedidos revertidos.
+    for (const aviso of r.avisos) this.rt.aLocal(aviso.localId,'pedido',{tipo:'nuevo',subpedidoId:aviso.subpedidoId});
+    this.bus.publicar('pedido.creado',{recintoId,clienteId,pedidoId:r.pedidoId});
+    const { avisos: _, ...resultado } = r;
+    return { ...resultado, detalle:await this.pedido(clienteId,r.pedidoId) };
   }
 
   async misPedidos(clienteId: string) {
@@ -224,7 +233,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
       [p.id],
     );
     for (const s of subs) {
-      s.items = await many(this.db, 'select producto_id, nombre, cantidad, precio_bs, drop_id from subpedido_item where subpedido_id = $1', [s.id]);
+      s.items = await many(this.db, `select i.*, coalesce((select json_agg(v.variante_id) from subpedido_item_variante v where v.item_id=i.id),'[]') as variante_ids from subpedido_item i where subpedido_id=$1`, [s.id]);
       s.etiqueta = ETIQUETA_ESTADO[s.estado as EstadoSubpedido];
     }
     return { ...p, subpedidos: subs };
@@ -237,7 +246,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
       `update subpedido s set llego_en = coalesce(s.llego_en, now()),
               estado = case when s.estado = 'listo' then 'cliente_llego' else s.estado end
        from pedido p where p.id = s.pedido_id and p.cliente_id = $1 and ($2::uuid is null or p.id = $2)
-         and s.estado in ('recibido','confirmado','preparando','listo') and p.franja_fin > now() - interval '3 hours'
+         and s.estado in ('recibido','confirmado','preparando','listo') and (p.tipo='comida' or p.fecha_estimada_retiro >= (now() at time zone 'America/La_Paz')::date)
        returning s.id, s.local_id, s.estado, p.codigo`,
       [clienteId, pedidoId],
     );
@@ -296,34 +305,98 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
   /** Recompra en un toque: devuelve los ítems disponibles para cargar en el carrito. */
   async repetir(clienteId: string, pedidoId: string) {
     const p = await this.pedido(clienteId, pedidoId);
-    const items = p.subpedidos.flatMap((s: any) => s.items.map((i: any) => ({ productoId: i.producto_id, cantidad: i.cantidad })));
-    const disponibles = await many<any>(
-      this.db,
-      `${this.selectProducto} where p.id = any($1::uuid[]) and p.activo and l.activo and p.stock > 0`,
-      [items.map((i: any) => i.productoId)],
-    );
-    const d = new Map(disponibles.map((x) => [x.id, x]));
-    return items.filter((i: any) => d.has(i.productoId)).map((i: any) => ({ ...i, producto: d.get(i.productoId), cantidad: Math.min(i.cantidad, d.get(i.productoId).stock) }));
+    const resultado: any[] = [];
+    for (const sp of p.subpedidos) for (const i of sp.items) {
+      const producto = await one<any>(this.db,`${this.selectProducto} where p.id=$1 and p.activo and l.activo`,[i.producto_id]);
+      if (!producto) continue;
+      const grupos = await this.leerVariantes(this.db,producto.id);
+      const opciones = grupos.flatMap(g => g.opciones).filter(v => i.variante_ids.includes(v.id));
+      if (opciones.length !== i.variante_ids.length || grupos.some(g => opciones.filter(v => v.grupo_id===g.id).length!==1)) continue;
+      const stock = opciones.length ? Math.min(...opciones.map(v => v.stock)) : producto.stock;
+      if (stock < 1) continue;
+      const precioBs = precioVariantes(Number(producto.precio_bs),opciones);
+      if (precioBs < 0) continue;
+      resultado.push({ productoId:producto.id,producto,cantidad:Math.min(i.cantidad,stock),varianteIds:i.variante_ids,
+        varianteDetalle:grupos.map(g => `${g.titulo}: ${opciones.find(v => v.grupo_id===g.id).nombre}`).join(' | '),precioBs });
+    }
+    return resultado;
   }
 
   // ------------------------------------------------------------------ local: productos (HU-Y13)
-  productosDelLocal(localId: string) {
-    return many(this.db, `select p.*, c.nombre as categoria from producto p join categoria c on c.id = p.categoria_id where p.local_id = $1 order by p.activo desc, p.nombre`, [localId]);
+  private async leerVariantes(q: Queryable, productoId: string) {
+    const grupos = await many<any>(q,'select * from producto_grupo_variante where producto_id=$1 and activo order by orden,id',[productoId]);
+    const opciones = await many<any>(q,'select * from producto_variante where producto_id=$1 and activo order by nombre,id',[productoId]);
+    return grupos.map(g => ({...g,opciones:opciones.filter(v => v.grupo_id===g.id)}));
+  }
+
+  async variantesDelLocal(s: Sesion, id: string) {
+    if (!await one(this.db,'select id from producto where id=$1 and local_id=$2',[id,s.localId])) throw new NotFoundException('Producto no encontrado en tu local');
+    return this.leerVariantes(this.db,id);
+  }
+
+  async guardarVariantes(s: Sesion, id: string, grupos: GrupoVariante[]) {
+    return this.db.tx(async q => {
+      if (!await one(q,'select id from producto where id=$1 and local_id=$2 for update',[id,s.localId])) throw new NotFoundException('Producto no encontrado en tu local');
+      await this.escribirVariantes(q,id,grupos);
+      return this.leerVariantes(q,id);
+    });
+  }
+
+  private async escribirVariantes(q: Queryable, productoId: string, grupos: GrupoVariante[]) {
+    const ids = new Set<string>();
+    for (const g of grupos) for (const id of [g.id,...g.opciones.map(v => v.id)].filter(Boolean) as string[]) {
+      if (ids.has(id)) throw new BadRequestException('Identificador de variante repetido');
+      ids.add(id);
+    }
+    // Desactivar en lugar de borrar mantiene las referencias de pedidos históricos.
+    await q.query('update producto_grupo_variante set activo=false where producto_id=$1',[productoId]);
+    await q.query('update producto_variante set activo=false where producto_id=$1',[productoId]);
+    for (const [orden,g] of grupos.entries()) {
+      const grupoId = g.id ?? randomUUID();
+      if (g.id) {
+        if (!await one(q,'update producto_grupo_variante set titulo=$3,orden=$4,activo=true where id=$1 and producto_id=$2 returning id',[g.id,productoId,g.titulo,orden])) throw new BadRequestException('El grupo no pertenece al producto');
+      } else await q.query('insert into producto_grupo_variante (id,producto_id,titulo,orden) values ($1,$2,$3,$4)',[grupoId,productoId,g.titulo,orden]);
+      for (const v of g.opciones) {
+        if (v.id) {
+          if (!await one(q,'update producto_variante set nombre=$4,stock=$5,precio_bs=$6,foto_url=$7,activo=$8 where id=$1 and grupo_id=$2 and producto_id=$3 returning id',
+            [v.id,grupoId,productoId,v.nombre,v.stock,v.precioBs ?? null,v.fotoUrl ?? null,v.activo ?? true])) throw new BadRequestException('La opción no pertenece a este grupo');
+        } else await q.query('insert into producto_variante (grupo_id,producto_id,nombre,stock,precio_bs,foto_url,activo) values ($1,$2,$3,$4,$5,$6,$7)',
+          [grupoId,productoId,v.nombre,v.stock,v.precioBs ?? null,v.fotoUrl ?? null,v.activo ?? true]);
+      }
+    }
+  }
+
+  async productosDelLocal(localId: string) {
+    const productos = await many<any>(this.db, `select p.*, c.nombre as categoria from producto p join categoria c on c.id = p.categoria_id where p.local_id = $1 order by p.activo desc, p.nombre`, [localId]);
+    return Promise.all(productos.map(async p => ({...p,variantes:await this.leerVariantes(this.db,p.id)})));
+  }
+
+  private async validarCategoria(q: Queryable, localId: string | undefined, categoriaId: string) {
+    if (!await one(q, 'select 1 from local l join categoria lc on lc.id=l.categoria_id join categoria pc on pc.id=$2 where l.id=$1 and lc.ambito=pc.ambito',[localId,categoriaId])) {
+      throw new BadRequestException('La categoría debe pertenecer al mismo ámbito que el comercio');
+    }
   }
 
   async crearProducto(s: Sesion, d: DatosProducto) {
     if (!s.localId) throw new ForbiddenException('Tu usuario no está asignado a un local');
-    return one(
-      this.db,
+    return this.db.tx(async q => {
+    await this.validarCategoria(q,s.localId,d.categoriaId);
+    const p = await one<any>(
+      q,
       `insert into producto (local_id, nombre, descripcion, precio_bs, stock, categoria_id, foto_url, activo, tiempo_preparacion_min, etiquetas)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
       [s.localId, d.nombre, d.descripcion ?? '', d.precioBs, d.stock, d.categoriaId, d.fotoUrl ?? null, d.activo ?? true, d.tiempoPreparacionMin ?? null, d.etiquetas ?? []],
     );
+    if (d.variantes) await this.escribirVariantes(q,p.id,d.variantes);
+    return p;
+    });
   }
 
   async actualizarProducto(s: Sesion, id: string, d: Partial<DatosProducto>) {
+    return this.db.tx(async q => {
+    if (d.categoriaId) await this.validarCategoria(q,s.localId,d.categoriaId);
     const p = await one(
-      this.db,
+      q,
       `update producto set nombre = coalesce($3,nombre), descripcion = coalesce($4,descripcion), precio_bs = coalesce($5,precio_bs),
          stock = coalesce($6,stock), categoria_id = coalesce($7,categoria_id), foto_url = coalesce($8,foto_url), activo = coalesce($9,activo),
          tiempo_preparacion_min = case when $10::boolean then $11::int else tiempo_preparacion_min end, etiquetas = coalesce($12,etiquetas)
@@ -332,7 +405,9 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
         d.tiempoPreparacionMin !== undefined, d.tiempoPreparacionMin ?? null, d.etiquetas ?? null],
     );
     if (!p) throw new NotFoundException('Producto no encontrado en tu local');
+    if (d.variantes) await this.escribirVariantes(q,id,d.variantes);
     return p;
+    });
   }
 
   async eliminarProducto(s: Sesion, id: string) {
@@ -353,15 +428,15 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
   async bandeja(localId: string, estado?: string) {
     const subs = await many<any>(
       this.db,
-      `select s.*, p.codigo as pedido, p.franja_inicio, p.franja_fin, p.creado_en, u.nombre as cliente
+      `select s.*, p.codigo as pedido, p.tipo, p.fecha_estimada_retiro, p.franja_inicio, p.franja_fin, p.creado_en, u.nombre as cliente
        from subpedido s join pedido p on p.id = s.pedido_id join usuario u on u.id = p.cliente_id
        where s.local_id = $1 and ($2::text is null or s.estado = $2)
          and (s.estado not in ('entregado','vencido') or p.creado_en > now() - interval '2 days')
-       order by case s.estado when 'cliente_llego' then 0 when 'recibido' then 1 when 'confirmado' then 2 when 'preparando' then 3 when 'listo' then 4 else 5 end, p.franja_inicio`,
+       order by case s.estado when 'cliente_llego' then 0 when 'recibido' then 1 when 'confirmado' then 2 when 'preparando' then 3 when 'listo' then 4 else 5 end, p.creado_en`,
       [localId, estado ?? null],
     );
     for (const s of subs) {
-      s.items = await many(this.db, 'select nombre, cantidad, precio_bs from subpedido_item where subpedido_id = $1', [s.id]);
+      s.items = await many(this.db, 'select id, nombre, cantidad, precio_bs, variante_detalle from subpedido_item where subpedido_id = $1', [s.id]);
       s.cliente = enmascararNombre(s.cliente);
       s.etiqueta = ETIQUETA_ESTADO[s.estado as EstadoSubpedido];
       delete s.pin;
@@ -370,19 +445,19 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
     return subs;
   }
 
-  async avanzar(s: Sesion, subpedidoId: string, a: 'confirmado' | 'preparando' | 'listo') {
+  async avanzar(s: Sesion, subpedidoId: string, a: 'confirmado' | 'preparando' | 'listo', tiempoPreparacionMin?: number) {
     const r = await this.db.tx(async (q) => {
       const sp = await one<any>(
         q,
-        `select s.*, p.cliente_id, p.codigo from subpedido s join pedido p on p.id = s.pedido_id where s.id = $1 and s.local_id = $2 for update of s`,
+        `select s.*, p.cliente_id, p.codigo, p.tipo from subpedido s join pedido p on p.id = s.pedido_id where s.id = $1 and s.local_id = $2 for update of s`,
         [subpedidoId, s.localId],
       );
       if (!sp) throw new NotFoundException('Pedido no encontrado en tu local');
-      if (!puedeTransicionar(sp.estado, a)) throw new BadRequestException(`No se puede pasar de «${ETIQUETA_ESTADO[sp.estado as EstadoSubpedido]}» a «${ETIQUETA_ESTADO[a]}»`);
+      if (!(sp.tipo === 'retail' && a === 'listo' && ['recibido','confirmado','preparando'].includes(sp.estado)) && !puedeTransicionar(sp.estado, a)) throw new BadRequestException(`No se puede pasar de «${ETIQUETA_ESTADO[sp.estado as EstadoSubpedido]}» a «${ETIQUETA_ESTADO[a]}»`);
       // Si el cliente ya avisó que llegó, al quedar listo pasa directo a «Cliente llegó»
       const destino: EstadoSubpedido = a === 'listo' && sp.llego_en ? 'cliente_llego' : a;
       const col = { confirmado: 'confirmado_en', preparando: 'preparando_en', listo: 'listo_en' }[a];
-      const act = await one<any>(q, `update subpedido set estado = $2, ${col} = now() where id = $1 returning *`, [subpedidoId, destino]);
+      const act = await one<any>(q, `update subpedido set estado = $2, ${col} = now(), tiempo_preparacion_min=coalesce($3,tiempo_preparacion_min) where id = $1 returning *`, [subpedidoId, destino, sp.tipo === 'comida' ? tiempoPreparacionMin ?? null : null]);
       await this.notif.crear(q, sp.cliente_id, 'pedido', `Pedido ${sp.codigo}`, `${ETIQUETA_ESTADO[destino]}`, { pedidoId: sp.pedido_id, subpedidoId });
       return { ...act, cliente_id: sp.cliente_id };
     });
@@ -404,7 +479,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
       totalBs: Number(sp.total_bs),
       pago: sp.pago,
       comprobanteUrl: sp.comprobante_url,
-      items: await many(this.db, 'select nombre, cantidad, precio_bs from subpedido_item where subpedido_id = $1', [sp.id]),
+      items: await many(this.db, 'select id, nombre, cantidad, precio_bs, variante_detalle from subpedido_item where subpedido_id = $1', [sp.id]),
       entregable: ['listo', 'cliente_llego'].includes(sp.estado),
     };
   }
@@ -483,11 +558,12 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
         q,
         `select s.id, s.local_id, p.cliente_id from subpedido s join pedido p on p.id = s.pedido_id
          where s.estado in ('recibido','confirmado','preparando','listo','cliente_llego')
-           and p.franja_fin < now() - interval '${MINUTOS_GRACIA_RETIRO} minutes' for update of s`,
+           and p.tipo='retail' and p.fecha_estimada_retiro < (now() at time zone 'America/La_Paz')::date for update of s`,
       );
       for (const s of subs) {
         await q.query(`update subpedido set estado = 'vencido' where id = $1`, [s.id]);
-        await q.query(`update producto p set stock = p.stock + i.cantidad from subpedido_item i where i.subpedido_id = $1 and p.id = i.producto_id`, [s.id]);
+        await q.query(`update producto p set stock=p.stock+x.cantidad from (select producto_id,sum(cantidad)::int cantidad from subpedido_item where subpedido_id=$1 and variante_id is null group by producto_id) x where p.id=x.producto_id`,[s.id]);
+        await q.query(`update producto_variante v set stock=v.stock+x.cantidad from (select iv.variante_id,sum(i.cantidad)::int cantidad from subpedido_item i join subpedido_item_variante iv on iv.item_id=i.id where i.subpedido_id=$1 group by iv.variante_id) x where v.id=x.variante_id`,[s.id]);
       }
       return subs;
     });
