@@ -47,6 +47,12 @@ export class PaseoYaCatalogoController {
     return this.svc.categorias(ambito || undefined);
   }
 
+  @Get('locales')
+  locales(@SesionActual() s: Sesion, @Query('ambito') ambito?: string, @Query('categoria') categoriaId?: string) {
+    return this.svc.locales(s.recintoId, { ambito: ambito || undefined, categoriaId: categoriaId || undefined });
+  }
+
+
   @Get('productos')
   productos(@SesionActual() s: Sesion, @Query('categoria') categoriaId?: string, @Query('ambito') ambito?: string, @Query('local') localId?: string) {
     return this.svc.productos(s.recintoId, { categoriaId: categoriaId || undefined, ambito: ambito || undefined, localId: localId || undefined }, s.rol === 'cliente' ? s.sub : null);

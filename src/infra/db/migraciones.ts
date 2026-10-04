@@ -849,7 +849,15 @@ alter table pedido alter column franja_fin drop not null;
 alter table subpedido add column tiempo_preparacion_min int;
 `,
   },
+  {
+    id: '009_local_imagen_banner',
+    sql: /* sql */ `
+alter table local add column if not exists foto_url text;
+alter table local add column if not exists banner_url text;
+`,
+  },
 ];
+
 
 /** Tablas propias del sistema: el reinicio del seed borra solo estas, nunca otras de la misma base. */
 export const TABLAS_PROPIAS = [

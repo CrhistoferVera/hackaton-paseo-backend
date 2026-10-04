@@ -76,9 +76,28 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
   private readonly selectProducto = `select p.id, p.nombre, p.descripcion, p.precio_bs, coalesce((select min(gs.stock)::int from
       (select coalesce(sum(v.stock) filter (where v.activo),0) stock from producto_grupo_variante g
        left join producto_variante v on v.grupo_id=g.id where g.producto_id=p.id and g.activo group by g.id) gs),p.stock) as stock, p.foto_url, p.destacado_hasta, p.categoria_id, p.tiempo_preparacion_min, p.etiquetas,
-      c.nombre as categoria, c.ambito, l.id as local_id, l.nombre as local, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
+      c.nombre as categoria, c.ambito, l.id as local_id, l.nombre as local, l.descripcion as local_descripcion, l.foto_url as local_foto_url, l.banner_url as local_banner_url, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
       l.horario_apertura, l.horario_cierre
     from producto p join local l on l.id = p.local_id join categoria c on c.id = p.categoria_id`;
+
+  async locales(recintoId: string, f?: { ambito?: string; categoriaId?: string }) {
+    const amb = f?.ambito === 'retail' ? 'tiendas' : f?.ambito ?? null;
+    return many(
+      this.db,
+      `select l.id, l.nombre, l.descripcion, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
+              l.horario_apertura, l.horario_cierre, l.foto_url, l.banner_url, l.activo,
+              c.id as categoria_id, c.nombre as categoria, c.ambito,
+              (select count(*)::int from producto p where p.local_id = l.id and p.activo and
+                (p.stock > 0 or exists (select 1 from producto_variante v where v.producto_id = p.id and v.activo and v.stock > 0))) as total_productos
+       from local l
+       join categoria c on c.id = l.categoria_id
+       where l.recinto_id = $1 and l.activo
+         and ($2::text is null or c.ambito = $2)
+         and ($3::uuid is null or c.id = $3)
+       order by (select count(*)::int from producto p where p.local_id = l.id and p.activo) desc, l.nombre`,
+      [recintoId, amb, f?.categoriaId ?? null],
+    );
+  }
 
   async productos(recintoId: string, f: { categoriaId?: string; ambito?: string; localId?: string }, clienteId: string | null) {
     const filas = await many(
