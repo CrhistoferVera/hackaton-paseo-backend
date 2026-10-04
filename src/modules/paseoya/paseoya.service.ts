@@ -191,7 +191,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
   async crearPedido(
     recintoId: string,
     clienteId: string,
-    d: { items: ItemPedido[]; tipo?: 'comida' | 'retail'; fechaEstimadaRetiro?: string; fecha_estimada_retiro?: string; pago: 'en_local' | 'qr_anticipado' },
+    d: { items: ItemPedido[]; tipo?: 'comida' | 'retail'; fechaEstimadaRetiro?: string; fecha_estimada_retiro?: string; pago?: 'en_local' | 'qr_anticipado' },
   ) {
     if (!d.items.length) throw new BadRequestException('Tu carrito está vacío');
     const r = await this.db.tx(async (q) => {
@@ -255,7 +255,7 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
         const base = codigoLegible(8);
         const sub = g.items.reduce((a,i) => a+i.precio*i.cantidad,0);
         const sp = await one<any>(q, 'insert into subpedido (pedido_id,local_id,total_bs,codigo_retiro,pin,pago,tiempo_preparacion_min) values ($1,$2,$3,$4,$5,$6,$7) returning *',
-          [pedido.id,localId,sub,`${base}.${firmaCorta(base)}`,pinNumerico(4),d.pago,tipo === 'comida' ? g.minutos : null]);
+          [pedido.id,localId,sub,`${base}.${firmaCorta(base)}`,pinNumerico(4),d.pago ?? 'en_local',tipo === 'comida' ? g.minutos : null]);
         for (const i of g.items) {
           const item = await one<any>(q, 'insert into subpedido_item (subpedido_id,producto_id,nombre,cantidad,precio_bs,drop_id,variante_id,variante_detalle) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
             [sp.id,i.productoId,i.nombre,i.cantidad,i.precio,i.dropId ?? null,i.variantes[0]?.id ?? null,i.detalle || null]);
