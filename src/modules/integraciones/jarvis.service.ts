@@ -380,9 +380,9 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
     return `${enPiso(l.piso).replace(/^en /, '')}, local ${l.numero_local}`;
   }
 
-  /** «Nivel 1, local 112», «Terrazas, local T01» (para listas entre paréntesis). */
+  /** «Nivel 1, local 112», «Planta baja, local PB-01» (para listas entre paréntesis). */
   private static ubicacionCorta(l: { piso: string; numero_local: string }) {
-    return `${l.piso === 'T' ? 'Terrazas' : NOMBRE_PISO[l.piso]}, local ${l.numero_local}`;
+    return `${NOMBRE_PISO[l.piso]}, local ${l.numero_local}`;
   }
 
   // ------------------------------------------------------------------ saludo
@@ -957,7 +957,7 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
     }
     if (quiere === 'Entretenimiento' || (!quiere && /(que hago|aburrid)/.test(c.t))) {
       const ev = (await this.saber.eventos(c.recintoId, new Date(), finDelDia()))[0];
-      if (ev) return { texto: `${ev.en_curso ? 'Ahora mismo hay' : `Hoy a ${horaVoz(hhmmBo(ev.inicio))} hay`} ${ev.titulo} en ${ev.lugar}${ev.puntos ? `, y ganas ${ev.puntos} puntos por ir` : ''}. También están el cine y el boliche en las Terrazas.`, reescribir: false, entidades: { actividadId: ev.id }, eventos: [ev] };
+      if (ev) return { texto: `${ev.en_curso ? 'Ahora mismo hay' : `Hoy a ${horaVoz(hhmmBo(ev.inicio))} hay`} ${ev.titulo} en ${ev.lugar}${ev.puntos ? `, y ganas ${ev.puntos} puntos por ir` : ''}. También puedes visitar los locales de entretenimiento del Paseo.`, reescribir: false, entidades: { actividadId: ev.id }, eventos: [ev] };
     }
     const sub = /dulce|postre/.test(c.t) ? '(postre|torta|helado|cupcake|cheesecake|alfajor|brownie|dulce|chocolate|banana)' : /sed|beber|tomar/.test(c.t) ? '(jugo|batido|cafe|capuchino|limonada|te |smoothie|espresso|latte)' : null;
     // Recomendador equitativo: gusto del cliente + reparto justo del flujo entre competidores
@@ -1211,7 +1211,7 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
       const nombre = ev.vertical === 'ascensor' ? 'un ascensor' : 'una escalera central';
       const cerca = mejor.ruta ? (mejor.ruta.metros < 10 ? ' Estás justo al lado.' : ` El más cercano está a ${mejor.ruta.metros} metros: ${JarvisService.primerPaso(mejor.ruta)}`) : '';
       return {
-        texto: `Sí, hay ${nombre} que conecta ${lista(pisos.map((p) => (p === 'T' ? 'las Terrazas' : `el ${NOMBRE_PISO[p]}`)))}.${cerca}`,
+        texto: `Sí, hay ${nombre} que conecta ${lista(pisos.map((p) => (p === 'T' ? 'la Planta baja' : `el ${NOMBRE_PISO[p]}`)))}.${cerca}`,
         reescribir: false,
         ruta: mejor.ruta,
         acciones: mejor.ruta ? [{ etiqueta: 'Ver ruta en el mapa', ruta: '/ruta' }] : undefined,
@@ -1224,7 +1224,7 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
     const pasillo = [...g.nodos.values()].filter((n) => n.zonaId === z.id && n.tipo === 'pasillo');
     const destino = pasillo[Math.floor(pasillo.length / 2)];
     const { ruta } = destino ? await this.rutaHasta(c, destino.id) : { ruta: undefined };
-    const donde = z.piso === 'T' ? 'en las Terrazas' : `en el ${NOMBRE_PISO[z.piso]}`;
+    const donde = z.piso === 'T' ? 'en la Planta baja' : `en el ${NOMBRE_PISO[z.piso]}`;
     return {
       texto: `${nombreZona.charAt(0).toUpperCase() + nombreZona.slice(1)} está ${donde}${ruta && ruta.metros >= 10 ? `, a ${ruta.metros} metros de ti` : ''}.${ls.length ? ` Ahí están ${lista(ls.slice(0, 6).map((l) => l.nombre))}${ls.length > 6 ? `, y ${ls.length - 6} más` : ''}.` : ''}`,
       reescribir: false,
@@ -1236,7 +1236,7 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
   /** «¿Cuántos locales hay?»: se cuenta en la base. */
   private async conteo(c: Ctx): Promise<Borrador> {
     if (/\b(pisos|niveles)\b/.test(c.t)) {
-      return { texto: 'El Paseo Aranjuez tiene tres niveles: el Nivel 1, el Nivel 2 y las Terrazas, donde están el patio de comidas, los cines y la terraza.', reescribir: false };
+      return { texto: 'El Paseo Aranjuez tiene cinco niveles: Planta baja y los niveles 1, 2, 3 y 4.', reescribir: false };
     }
     const cs = await this.saber.conteo(c.recintoId);
     const total = cs.reduce((a, x) => a + x.n, 0);
@@ -1303,9 +1303,9 @@ pedido_estado = su pedido de PaseoYa; libre = cualquier otra cosa o si no estás
 const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
 const DIAS_PLURAL = ['domingos', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados'];
 
-/** «en el Nivel 1», «en las Terrazas». */
+/** «en el Nivel 1», «en la Planta baja». */
 function enPiso(piso: string) {
-  return piso === 'T' ? 'en las Terrazas' : `en el ${NOMBRE_PISO[piso]}`;
+  return piso === 'T' ? 'en la Planta baja' : `en el ${NOMBRE_PISO[piso]}`;
 }
 
 const GENERICO: Record<string, string> = {

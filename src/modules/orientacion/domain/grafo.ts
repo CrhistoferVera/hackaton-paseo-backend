@@ -9,8 +9,8 @@ export const METROS_POR_UNIDAD = 0.12;
 export const VELOCIDAD_M_S = 1.2;
 const Y_PASILLO = 300;
 const PASO_PASILLO = 100;
-const PISOS = ['N1', 'N2', 'T'] as const;
-export const NOMBRE_PISO: Record<string, string> = { N1: 'Nivel 1', N2: 'Nivel 2', T: 'las Terrazas' };
+const PISOS = ['T', 'N1', 'N2', 'N3', 'N4'] as const;
+export const NOMBRE_PISO: Record<string, string> = { T: 'Planta baja', N1: 'Nivel 1', N2: 'Nivel 2', N3: 'Nivel 3', N4: 'Nivel 4' };
 
 /** «el Sector B», «el patio de comidas», «los cines», «la terraza». */
 export function conArticulo(nombre: string) {
@@ -114,8 +114,7 @@ export function construirGrafo(e: EntradaPlano): { nodos: Nodo[]; aristas: Arist
       unir(n, pasilloCercano(piso, x));
       return n;
     });
-    unir(porPiso[0], porPiso[1], tipo, metrosEntrePisos);
-    unir(porPiso[1], porPiso[2], tipo, metrosEntrePisos);
+    for (let i = 1; i < porPiso.length; i++) unir(porPiso[i - 1], porPiso[i], tipo, metrosEntrePisos);
   }
   return { nodos, aristas };
 }

@@ -621,7 +621,7 @@ Vistas disponibles (esquema oro, solo lectura, agregadas, sin datos personales):
 - oro.clientes_perfil(zona_residencia text, rango_edad text, genero text, clientes int)
 - oro.pedidos_paseoya(local text, estado text, fecha date, subpedidos int, total_bs numeric)
 - oro.segmentos(nombre text, descripcion text, tamano int, ticket_promedio numeric, horario text, categorias text[])
-La fecha de hoy en Bolivia es bo(now())::date. Los pisos son N1, N2 y T (Terrazas).`;
+La fecha de hoy en Bolivia es bo(now())::date. Los pisos son Planta baja (T) y niveles 1 a 4 (N1 a N4).`;
 
   private validarSql(sql: string) {
     const s = sql.trim().replace(/;+\s*$/, '');

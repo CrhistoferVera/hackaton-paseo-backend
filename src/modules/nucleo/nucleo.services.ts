@@ -25,11 +25,16 @@ export class TelemetriaService {
   async registrar(q: Queryable, e: EventoTelemetria): Promise<void> {
     const zona =
       e.zonaId ?? (e.localId ? (await one<{ zona_id: string }>(q, 'select zona_id from local where id = $1', [e.localId]))?.zona_id : null);
-    await q.query(
+    const registrado = await q.query(
       `insert into evento (recinto_id, id_seudonimo, tipo, payload, local_id, zona_id)
-       values ($1, (select id_seudonimo from cliente_perfil where usuario_id = $2), $3, $4, $5, $6)`,
+       select $1, (select id_seudonimo from cliente_perfil where usuario_id = $2), $3, $4, $5, $6
+       where exists (select 1 from recinto where id = $1)
+         and ($5::uuid is null or exists (select 1 from local where id = $5 and recinto_id = $1))
+         and ($6::uuid is null or exists (select 1 from zona where id = $6 and recinto_id = $1))
+       returning recinto_id`,
       [e.recintoId, e.clienteId ?? null, e.tipo, JSON.stringify(e.payload ?? {}), e.localId ?? null, zona ?? null],
     );
+    if (!registrado.rows.length) return;
     setImmediate(() =>
       this.rt.aSala(e.recintoId, 'evento', {
         tipo: e.tipo,

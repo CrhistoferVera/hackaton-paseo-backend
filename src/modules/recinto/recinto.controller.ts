@@ -9,7 +9,7 @@ import { RecintoService } from './recinto.service.js';
 const LocalSchema = z.object({
   nombre: z.string().min(2),
   categoriaId: zUuid,
-  piso: z.enum(['N1', 'N2', 'T']),
+  piso: z.enum(['N1', 'N2', 'N3', 'N4', 'T']),
   sector: z.string().min(1),
   numeroLocal: z.string().min(1),
   coordX: z.number().min(0).max(1000),
@@ -22,6 +22,7 @@ const LocalSchema = z.object({
   activo: z.boolean().optional(),
   fotoUrl: z.string().nullable().optional(),
   bannerUrl: z.string().nullable().optional(),
+  fotos: z.array(z.string().startsWith('/uploads/')).max(20).optional(),
 });
 const CategoriaSchema = z.object({ nombre: z.string().min(2), ambito: z.enum(['comida', 'tiendas']), orden: z.number().int().optional() });
 

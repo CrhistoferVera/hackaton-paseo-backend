@@ -886,6 +886,21 @@ create table if not exists info_paseo (
 create index if not exists info_paseo_recinto_idx on info_paseo (recinto_id) where activo;
 `,
   },
+  {
+    id: '012_locales_csv_fotos_niveles',
+    sql: /* sql */ `
+alter table local add column if not exists fotos text[] not null default '{}';
+
+alter table zona drop constraint if exists zona_piso_check;
+alter table zona add constraint zona_piso_check check (piso in ('N1','N2','N3','N4','T'));
+alter table local drop constraint if exists local_piso_check;
+alter table local add constraint local_piso_check check (piso in ('N1','N2','N3','N4','T'));
+alter table nodo_ubicacion drop constraint if exists nodo_ubicacion_piso_check;
+alter table nodo_ubicacion add constraint nodo_ubicacion_piso_check check (piso in ('N1','N2','N3','N4','T'));
+alter table servicio_paseo drop constraint if exists servicio_paseo_piso_check;
+alter table servicio_paseo add constraint servicio_paseo_piso_check check (piso in ('N1','N2','N3','N4','T'));
+`,
+  },
 ];
 
 

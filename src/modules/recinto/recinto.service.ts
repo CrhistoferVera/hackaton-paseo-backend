@@ -10,7 +10,7 @@ import { EventBus } from '../nucleo/event-bus.js';
 export interface DatosLocal {
   nombre: string;
   categoriaId: string;
-  piso: 'N1' | 'N2' | 'T';
+  piso: 'N1' | 'N2' | 'N3' | 'N4' | 'T';
   sector: string;
   numeroLocal: string;
   coordX: number;
@@ -23,6 +23,7 @@ export interface DatosLocal {
   activo?: boolean;
   fotoUrl?: string | null;
   bannerUrl?: string | null;
+  fotos?: string[];
 }
 
 /** Plano, locales, categorías y buscador del Paseo (módulo recinto). */
@@ -43,7 +44,8 @@ export class RecintoService {
     const locales = await many<any>(
       this.db,
       `select l.id, l.nombre, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y, l.zona_id, l.horario_apertura, l.horario_cierre,
-              l.activo, l.descripcion, l.palabras_clave, l.nit, l.codigo_puerta, l.telefono, l.dias_atencion, c.id as categoria_id, c.nombre as categoria, c.ambito
+              l.activo, l.descripcion, l.palabras_clave, l.nit, l.codigo_puerta, l.telefono, l.dias_atencion, l.foto_url, l.banner_url, l.fotos,
+              c.id as categoria_id, c.nombre as categoria, c.ambito
        from local l join categoria c on c.id = l.categoria_id where l.recinto_id = $1 order by l.piso, l.numero_local`,
       [recintoId],
     );
@@ -58,14 +60,16 @@ export class RecintoService {
       { id: 'N1:entrada:sur', nombre: 'Puerta Sur', piso: 'N1', x: 500, y: 600 },
       { id: 'N1:entrada:parqueo', nombre: 'Acceso del parqueo', piso: 'N1', x: 1000, y: 300 },
     ];
-    const verticales = ['N1', 'N2', 'T'].flatMap((piso) => [
+    const verticales = ['T', 'N1', 'N2', 'N3', 'N4'].flatMap((piso) => [
       { tipo: 'escalera', piso, x: 450, y: 280 },
       { tipo: 'ascensor', piso, x: 850, y: 280 },
     ]);
     return { recinto, pisos: [
+      { id: 'T', nombre: 'Planta baja' },
       { id: 'N1', nombre: 'Nivel 1' },
       { id: 'N2', nombre: 'Nivel 2' },
-      { id: 'T', nombre: 'Terrazas' },
+      { id: 'N3', nombre: 'Nivel 3' },
+      { id: 'N4', nombre: 'Nivel 4' },
     ], ancho: 1000, alto: 600, zonas, locales, servicios, entradas, verticales };
   }
 
@@ -202,12 +206,12 @@ export class RecintoService {
       const l = await one(
         q,
         `insert into local (recinto_id, nombre, categoria_id, piso, sector, numero_local, coord_x, coord_y, zona_id,
-           horario_apertura, horario_cierre, descripcion, palabras_clave, nit, codigo_puerta, activo, foto_url, banner_url)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning *`,
+           horario_apertura, horario_cierre, descripcion, palabras_clave, nit, codigo_puerta, activo, foto_url, banner_url, fotos)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) returning *`,
         [
           s.recintoId, d.nombre, d.categoriaId, d.piso, d.sector, d.numeroLocal, d.coordX, d.coordY, zona,
           d.horarioApertura ?? '10:00', d.horarioCierre ?? '22:00', d.descripcion ?? '', d.palabrasClave ?? [],
-          d.nit ?? null, `L-${codigoLegible(8)}`, d.activo ?? true, d.fotoUrl ?? null, d.bannerUrl ?? null,
+          d.nit ?? null, `L-${codigoLegible(8)}`, d.activo ?? true, d.fotoUrl ?? null, d.bannerUrl ?? null, d.fotos ?? [],
         ],
       );
       await this.auditoria.registrar(q, s.sub, 'crear_local', 'local', l.id, null, l);
@@ -234,12 +238,13 @@ export class RecintoService {
            descripcion = coalesce($12,descripcion), palabras_clave = coalesce($13,palabras_clave), nit = coalesce($14,nit),
            activo = coalesce($15,activo),
            foto_url = case when $16::boolean then $17 else foto_url end,
-           banner_url = case when $18::boolean then $19 else banner_url end
+           banner_url = case when $18::boolean then $19 else banner_url end,
+           fotos = case when $20::boolean then $21 else fotos end
          where id = $1 returning *`,
         [
           id, d.nombre ?? null, d.categoriaId ?? null, piso, d.sector ?? null, d.numeroLocal ?? null, x, y, zona,
           d.horarioApertura ?? null, d.horarioCierre ?? null, d.descripcion ?? null, d.palabrasClave ?? null, d.nit ?? null, d.activo ?? null,
-          d.fotoUrl !== undefined, d.fotoUrl ?? null, d.bannerUrl !== undefined, d.bannerUrl ?? null,
+          d.fotoUrl !== undefined, d.fotoUrl ?? null, d.bannerUrl !== undefined, d.bannerUrl ?? null, d.fotos !== undefined, d.fotos ?? [],
         ],
       );
       await this.auditoria.registrar(q, s.sub, 'actualizar_local', 'local', id, antes, l);
