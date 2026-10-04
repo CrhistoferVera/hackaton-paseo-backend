@@ -75,7 +75,7 @@ export class OrientacionService implements OnModuleInit, OnModuleDestroy {
           p.push(a.desde, a.hasta, a.metros, a.tipo);
           return `($${k * 4 + 1},$${k * 4 + 2},$${k * 4 + 3},$${k * 4 + 4})`;
         });
-        await q.query(`insert into arista_ubicacion (desde, hasta, metros, tipo) values ${v.join(',')}`, p);
+        await q.query(`insert into arista_ubicacion (desde, hasta, metros, tipo) values ${v.join(',')} on conflict (desde, hasta) do nothing`, p);
       }
     });
     this.cache.delete(recintoId);

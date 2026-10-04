@@ -46,6 +46,15 @@ const PISO_CSV: Record<(typeof LOCALES_CSV)[number]['piso'], 'T' | 'N1' | 'N2' |
   '4': 'N4',
 };
 const CATEGORIAS_COMIDA = new Set(['comida', 'bar', 'restobar']);
+const ALIAS_FOTOS: Record<string, string[]> = {
+  fairplaykids: ['kids'],
+  hermassi: ['hermass'],
+  chotomatte: ['chottomatte'],
+  hoyhaycafe: ['hoyhay'],
+  joyeriasimperio: ['joyeriaimperio', 'joyerias'],
+  solopasta: ['solopastas'],
+};
+const slugCompacto = (s: string) => slug(s).replace(/-/g, '');
 
 function grupoCategoria(categoria: string) {
   const n = categoria.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -61,21 +70,26 @@ function grupoCategoria(categoria: string) {
 function fotosLocales(nombreLocal: string): string[] {
   const raiz = join(DIR_UPLOADS, 'locales');
   if (!existsSync(raiz)) return [];
-  const slugLocal = slug(nombreLocal);
+  const slugLocal = slugCompacto(nombreLocal);
+  const nombresFoto = new Set([slugLocal, ...(ALIAS_FOTOS[slugLocal] ?? [])]);
   const validas = new Set(['.jpg', '.jpeg', '.png', '.webp']);
-  const archivos: string[] = [];
+  const archivos = new Set<string>();
   for (const entrada of readdirSync(raiz, { withFileTypes: true })) {
-    const extension = entrada.name.slice(entrada.name.lastIndexOf('.')).toLowerCase();
-    if (entrada.isFile() && slug(entrada.name.slice(0, -extension.length)) === slugLocal && validas.has(extension)) {
-      archivos.push(join(raiz, entrada.name));
-    } else if (entrada.isDirectory() && slug(entrada.name) === slugLocal) {
+    if (entrada.isFile()) {
+      const punto = entrada.name.lastIndexOf('.');
+      if (punto < 1) continue;
+      const extension = entrada.name.slice(punto).toLowerCase();
+      const nombreFoto = slugCompacto(entrada.name.slice(0, punto));
+      const coincide = [...nombresFoto].some((n) => nombreFoto === n || new RegExp(`^${n}\\d+$`).test(nombreFoto));
+      if (coincide && validas.has(extension)) archivos.add(join(raiz, entrada.name));
+    } else if (entrada.isDirectory() && nombresFoto.has(slugCompacto(entrada.name))) {
       for (const foto of readdirSync(join(raiz, entrada.name), { withFileTypes: true })) {
-        const ext = foto.name.slice(foto.name.lastIndexOf('.')).toLowerCase();
-        if (foto.isFile() && validas.has(ext)) archivos.push(join(raiz, entrada.name, foto.name));
+        const punto = foto.name.lastIndexOf('.');
+        if (foto.isFile() && punto > 0 && validas.has(foto.name.slice(punto).toLowerCase())) archivos.add(join(raiz, entrada.name, foto.name));
       }
     }
   }
-  return archivos.sort((a, b) => a.localeCompare(b)).map((archivo) =>
+  return [...archivos].sort((a, b) => a.localeCompare(b)).map((archivo) =>
     `/uploads/${relative(DIR_UPLOADS, archivo).split(sep).map(encodeURIComponent).join('/')}`,
   );
 }
