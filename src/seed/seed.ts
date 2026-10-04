@@ -301,7 +301,6 @@ async function main() {
         e.precio ?? null, e.cupos ?? null, e.puntos, 'aprobada', e.local ? loc(e.local).cuenta : marketingId, adminId]);
     }
     // Un evento que está pasando ahora mismo (para probar «¿qué hay ahora?») y propuestas de comercios
-    const h = horaAhoraBo();
     filasActividad.push([recintoId, 'Exhibición de autos clásicos', 'Autos de colección de los años 50 a 80; fotos gratis.', 'cultural', new Date(ahora.getTime() - 1.5 * MS_HORA), new Date(ahora.getTime() + 4 * MS_HORA),
       zonaId.get('N1-B'), null, 'la plaza central del Nivel 1', null, null, 30, 'aprobada', marketingId, adminId]);
     filasActividad.push([recintoId, 'Demostración de cafeteras', 'Aprende a preparar espresso en casa.', 'taller', instante(-4, 17), instante(-4, 18), zonaId.get('N2-B'), loc('Electro Hogar').id, 'Electro Hogar, local 220',

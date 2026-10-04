@@ -17,7 +17,7 @@ export function normalizar(s: string) {
 }
 
 /** Singular aproximado: «salteñas» → «salteña», «audifonos» → «audifono». */
-export const singular = (w: string) => (w.length > 4 && /es$/.test(w) && !/(ces|ses)$/.test(w) ? w.slice(0, -2) : w.length > 3 && /s$/.test(w) ? w.slice(0, -1) : w);
+export const singular = (w: string) => (w.length > 4 && w.endsWith('es') && !/(ces|ses)$/.test(w) ? w.slice(0, -2) : w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w);
 
 /** Raíz para comparar: singular y sin la vocal de género («vegana» = «vegano», «zapatillas» = «zapatilla»). */
 export const raiz = (w: string) => {

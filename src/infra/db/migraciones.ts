@@ -886,6 +886,110 @@ create table if not exists info_paseo (
 create index if not exists info_paseo_recinto_idx on info_paseo (recinto_id) where activo;
 `,
   },
+  {
+    id: '012_datos_reales_estructura',
+    sql: /* sql */ `
+-- a. Crear tablas
+CREATE TABLE IF NOT EXISTS nivel (
+  recinto_id uuid not null references recinto(id) on delete cascade,
+  codigo text not null,
+  ordinal int not null,
+  etiqueta text not null,
+  primary key (recinto_id, codigo)
+);
+
+CREATE TABLE IF NOT EXISTS conector_vertical (
+  id text primary key,
+  recinto_id uuid not null references recinto(id) on delete cascade,
+  tipo text not null check (tipo in ('ESCALERA', 'ESCALERA_MECANICA', 'ASCENSOR')),
+  nombre text not null,
+  sentido text not null check (sentido in ('SUBE', 'BAJA', 'AMBOS')),
+  accesible boolean not null default false,
+  referencia text,
+  x numeric,
+  y numeric,
+  coord_origen text,
+  origen text not null
+);
+CREATE INDEX IF NOT EXISTS idx_conector_vertical_recinto on conector_vertical(recinto_id);
+
+CREATE TABLE IF NOT EXISTS conector_nivel (
+  conector_id text not null references conector_vertical(id) on delete cascade,
+  piso text not null,
+  x numeric,
+  y numeric,
+  primary key (conector_id, piso)
+);
+
+CREATE TABLE IF NOT EXISTS entrada (
+  id text primary key,
+  recinto_id uuid not null references recinto(id) on delete cascade,
+  nombre text not null,
+  piso text not null,
+  referencia text,
+  x numeric,
+  y numeric,
+  coord_origen text,
+  origen text not null
+);
+CREATE INDEX IF NOT EXISTS idx_entrada_recinto on entrada(recinto_id);
+
+-- b. Eliminar CHECK de piso
+ALTER TABLE local DROP CONSTRAINT IF EXISTS local_piso_check;
+ALTER TABLE zona DROP CONSTRAINT IF EXISTS zona_piso_check;
+ALTER TABLE servicio_paseo DROP CONSTRAINT IF EXISTS servicio_paseo_piso_check;
+ALTER TABLE nodo_ubicacion DROP CONSTRAINT IF EXISTS nodo_ubicacion_piso_check;
+
+-- c. Quitar NOT NULL y defaults en horario
+ALTER TABLE local 
+  ALTER COLUMN sector DROP NOT NULL,
+  ALTER COLUMN numero_local DROP NOT NULL,
+  ALTER COLUMN coord_x DROP NOT NULL,
+  ALTER COLUMN coord_y DROP NOT NULL,
+  ALTER COLUMN horario_apertura DROP NOT NULL,
+  ALTER COLUMN horario_apertura DROP DEFAULT,
+  ALTER COLUMN horario_cierre DROP NOT NULL,
+  ALTER COLUMN horario_cierre DROP DEFAULT,
+  ALTER COLUMN dias_atencion DROP NOT NULL,
+  ALTER COLUMN dias_atencion DROP DEFAULT,
+  ALTER COLUMN telefono DROP NOT NULL;
+
+ALTER TABLE servicio_paseo
+  ALTER COLUMN x DROP NOT NULL,
+  ALTER COLUMN y DROP NOT NULL;
+
+ALTER TABLE nodo_ubicacion
+  ALTER COLUMN x DROP NOT NULL,
+  ALTER COLUMN y DROP NOT NULL;
+
+-- d. Agregar columnas
+ALTER TABLE local 
+  ADD COLUMN IF NOT EXISTS origen text,
+  ADD COLUMN IF NOT EXISTS coord_origen text,
+  ADD COLUMN IF NOT EXISTS fila_origen int,
+  ADD COLUMN IF NOT EXISTS requiere_revision boolean not null default false,
+  ADD COLUMN IF NOT EXISTS nota_revision text;
+
+ALTER TABLE servicio_paseo
+  ADD COLUMN IF NOT EXISTS origen text,
+  ADD COLUMN IF NOT EXISTS coord_origen text;
+
+ALTER TABLE nodo_ubicacion
+  ADD COLUMN IF NOT EXISTS coord_origen text;
+
+ALTER TABLE arista_ubicacion
+  ADD COLUMN IF NOT EXISTS estimado boolean not null default false;
+
+-- e. Ampliar CHECK de tipo
+ALTER TABLE nodo_ubicacion DROP CONSTRAINT IF EXISTS nodo_ubicacion_tipo_check;
+ALTER TABLE nodo_ubicacion ADD CONSTRAINT nodo_ubicacion_tipo_check 
+  CHECK (tipo IN ('pasillo', 'local', 'entrada', 'escalera', 'ascensor', 'servicio', 'escalera_mecanica'));
+
+ALTER TABLE arista_ubicacion DROP CONSTRAINT IF EXISTS arista_ubicacion_tipo_check;
+ALTER TABLE arista_ubicacion ADD CONSTRAINT arista_ubicacion_tipo_check 
+  CHECK (tipo IN ('caminar', 'escalera', 'ascensor', 'escalera_mecanica'));
+`
+  }
 ];
 
 

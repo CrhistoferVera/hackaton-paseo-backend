@@ -14,10 +14,10 @@ export const NOMBRE_PISO: Record<string, string> = { N1: 'Nivel 1', N2: 'Nivel 2
 
 /** «el Sector B», «el patio de comidas», «los cines», «la terraza». */
 export function conArticulo(nombre: string) {
-  if (/^Sector /.test(nombre)) return `el ${nombre}`;
+  if (nombre.startsWith('Sector ')) return `el ${nombre}`;
   const n = nombre.toLowerCase();
   const primera = n.split(' ')[0];
-  const art = /as$/.test(primera) ? 'las' : /(os|es)$/.test(primera) ? 'los' : /a$/.test(primera) ? 'la' : 'el';
+  const art = primera.endsWith('as') ? 'las' : (primera.endsWith('os') || primera.endsWith('es')) ? 'los' : primera.endsWith('a') ? 'la' : 'el';
   return `${art} ${n}`;
 }
 

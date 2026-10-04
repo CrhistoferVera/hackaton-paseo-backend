@@ -16,7 +16,9 @@ export class PgliteDb extends Db {
 
   constructor(dir: string) {
     super();
-    mkdirSync(dir, { recursive: true });
+    if (!dir.startsWith('memory://')) {
+      mkdirSync(dir, { recursive: true });
+    }
     this.pg = new PGlite(dir, {
       parsers: {
         [types.NUMERIC]: (v: string) => Number(v),

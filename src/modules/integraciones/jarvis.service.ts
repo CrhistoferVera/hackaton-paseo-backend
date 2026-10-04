@@ -12,7 +12,7 @@ import { ConocimientoPaseo, type Encontrado, normalizar } from '../jarvis/conoci
 import { comoLaDijo, esDeCategoria, normalizar as norm, objetoDe, raicesDe, raiz } from '../jarvis/buscador.js';
 import { type Entidades, MemoriaJarvis, type Turno } from '../jarvis/memoria.service.js';
 import { RecomendadorService } from '../jarvis/recomendador.service.js';
-import { de, diaVoz, dinero, duracionVoz, fechaVoz, hhmmBo, horaVoz, lista, lugar } from '../jarvis/voz.js';
+import { diaVoz, dinero, duracionVoz, fechaVoz, hhmmBo, horaVoz, lista } from '../jarvis/voz.js';
 
 export type Intencion =
   | 'saludo' | 'gracias' | 'ayuda' | 'reinicio' | 'afirmacion'
@@ -158,7 +158,7 @@ export class JarvisService {
     let b: Borrador;
     try {
       b = await this.manejar(intencion, ctx);
-    } catch (e: any) {
+    } catch (_e: any) {
       b = { texto: `No pude consultar ese dato en este momento. ${NO_ENTIENDO}`, reescribir: false };
     }
     if (b.sinDatos) await this.saber.registrarSinResultado(recintoId, clienteId, b.sinDatos);
