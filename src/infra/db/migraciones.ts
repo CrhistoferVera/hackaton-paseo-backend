@@ -901,6 +901,61 @@ alter table servicio_paseo drop constraint if exists servicio_paseo_piso_check;
 alter table servicio_paseo add constraint servicio_paseo_piso_check check (piso in ('N1','N2','N3','N4','T'));
 `,
   },
+  {
+    id: '013_promociones_paseoya',
+    sql: /* sql */ `
+create table if not exists promociones (
+  id uuid primary key default gen_random_uuid(),
+  imagen_url text,
+  titulo text not null,
+  tipo text not null check (tipo in ('food', 'shop')),
+  negocio_id uuid references local(id) on delete set null,
+  activo boolean not null default true,
+  orden int not null default 0,
+  fecha_inicio timestamptz default now(),
+  fecha_fin timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists promociones_tipo_activo_idx on promociones (tipo, activo, orden);
+
+-- Población de promociones iniciales con imágenes reales
+insert into promociones (titulo, tipo, imagen_url, orden)
+select * from (values
+  ('2x1 en Pizzas Artesanales', 'food', '/uploads/locales/AlmacenDePizzas.jpeg', 1),
+  ('Postres y Cinnabon Especial', 'food', '/uploads/locales/Cinnabon.jpeg', 2),
+  ('Helados 30% OFF en VacaFría', 'food', '/uploads/locales/VacaFria.jpeg', 3),
+  ('Nuevas Waffles & Shakes', 'food', '/uploads/locales/WaffleKing.jpeg', 4),
+  ('Nueva Colección Gap', 'shop', '/uploads/locales/Gap.jpeg', 1),
+  ('Zapatillas Puma con Descuento', 'shop', '/uploads/locales/Puma.jpeg', 2),
+  ('Joyas y Accesorios Finos', 'shop', '/uploads/locales/joyeriaImperio.jpeg', 3),
+  ('Ropa y Novedades Kids', 'shop', '/uploads/locales/kids.jpeg', 4)
+) as p(titulo, tipo, imagen_url, orden)
+where not exists (select 1 from promociones);
+
+-- Asignar imágenes reales a los locales de comida y tiendas
+update local set foto_url = '/uploads/locales/Panchita.jpeg' where nombre ilike '%Panchita%' and foto_url is null;
+update local set foto_url = '/uploads/locales/Guajojo.jpeg' where nombre ilike '%Guajojó%' and foto_url is null;
+update local set foto_url = '/uploads/locales/AlmacenDePizzas.jpeg' where (nombre ilike '%Napoli%' or nombre ilike '%Pizza%') and foto_url is null;
+update local set foto_url = '/uploads/locales/VacaFria.jpeg' where (nombre ilike '%Heladería%' or nombre ilike '%Frío%') and foto_url is null;
+update local set foto_url = '/uploads/locales/Cinnabon.jpeg' where (nombre ilike '%Dulce Arte%' or nombre ilike '%Postres%') and foto_url is null;
+update local set foto_url = '/uploads/locales/HoyHay.jpeg' where (nombre ilike '%Café Alameda%' or nombre ilike '%Café%') and foto_url is null;
+update local set foto_url = '/uploads/locales/ChottoMatte.jpeg' where nombre ilike '%Sushi%' and foto_url is null;
+update local set foto_url = '/uploads/locales/Patanegra.jpeg' where nombre ilike '%Burger%' and foto_url is null;
+update local set foto_url = '/uploads/locales/FlavorBurst.jpeg' where nombre ilike '%Jugos%' and foto_url is null;
+update local set foto_url = '/uploads/locales/Brocheta.jpeg' where (nombre ilike '%Pollos%' or nombre ilike '%Terraza%') and foto_url is null;
+
+update local set foto_url = '/uploads/locales/FacePhone.jpeg' where (nombre ilike '%Tecno%' or nombre ilike '%Celular%') and foto_url is null;
+update local set foto_url = '/uploads/locales/joyeriaImperio.jpeg' where (nombre ilike '%Joyería%' or nombre ilike '%Relojería%') and foto_url is null;
+update local set foto_url = '/uploads/locales/Gap.jpeg' where (nombre ilike '%Moda%' or nombre ilike '%Urban%') and foto_url is null;
+update local set foto_url = '/uploads/locales/Puma.jpeg' where (nombre ilike '%Sport%' or nombre ilike '%Zapatería%') and foto_url is null;
+update local set foto_url = '/uploads/locales/kids.jpeg' where (nombre ilike '%Kids%' or nombre ilike '%Juguetería%') and foto_url is null;
+update local set foto_url = '/uploads/locales/LiliPink.jpeg' where (nombre ilike '%Bella Piel%' or nombre ilike '%Perfumería%') and foto_url is null;
+update local set foto_url = '/uploads/locales/SkyGames.jpeg' where (nombre ilike '%Gamer%' or nombre ilike '%Bowling%' or nombre ilike '%Cine%') and foto_url is null;
+update local set foto_url = '/uploads/locales/Cosbelle.jpeg' where (nombre ilike '%Peluquería%' or nombre ilike '%Barber%') and foto_url is null;
+update local set foto_url = '/uploads/locales/Opticas_Pauker.jpeg' where nombre ilike '%Óptica%' and foto_url is null;
+update local set foto_url = '/uploads/locales/bancoGanadero.jpeg' where (nombre ilike '%Farmacia%' or nombre ilike '%Hogar%') and foto_url is null;
+`,
+  },
 ];
 
 

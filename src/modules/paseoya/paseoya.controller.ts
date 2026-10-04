@@ -52,6 +52,11 @@ export class PaseoYaCatalogoController {
     return this.svc.locales(s.recintoId, { ambito: ambito || undefined, categoriaId: categoriaId || undefined });
   }
 
+  @Get('promociones')
+  promociones(@SesionActual() s: Sesion, @Query('tipo') tipo?: 'food' | 'shop') {
+    return this.svc.promocionesPaseoYa(s.recintoId, tipo || undefined);
+  }
+
 
   @Get('productos')
   productos(@SesionActual() s: Sesion, @Query('categoria') categoriaId?: string, @Query('ambito') ambito?: string, @Query('local') localId?: string) {

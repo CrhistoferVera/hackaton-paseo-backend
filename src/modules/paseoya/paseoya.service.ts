@@ -99,6 +99,22 @@ export class PaseoYaService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async promocionesPaseoYa(recintoId: string, tipo?: 'food' | 'shop') {
+    return many(
+      this.db,
+      `select pr.id, pr.titulo, pr.imagen_url, pr.tipo, pr.negocio_id, pr.activo, pr.orden, pr.fecha_inicio, pr.fecha_fin, pr.created_at,
+              l.nombre as negocio_nombre, l.piso as negocio_piso
+       from promociones pr
+       left join local l on l.id = pr.negocio_id
+       where pr.activo = true
+         and ($1::text is null or pr.tipo = $1)
+         and (pr.fecha_inicio is null or pr.fecha_inicio <= now())
+         and (pr.fecha_fin is null or pr.fecha_fin >= now())
+       order by pr.orden asc, pr.created_at desc`,
+      [tipo ?? null],
+    );
+  }
+
   async productos(recintoId: string, f: { categoriaId?: string; ambito?: string; localId?: string }, clienteId: string | null) {
     const filas = await many(
       this.db,
