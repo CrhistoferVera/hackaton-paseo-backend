@@ -114,8 +114,8 @@ export class DropsService {
   misDrops(clienteId: string) {
     return many(
       this.db,
-      `select r.drop_id, r.usado, d.precio_especial, d.fin, d.mensaje, p.id as producto_id, p.nombre as producto, p.precio_bs, p.foto_url, l.nombre as local
-       from reclamo_drop r join drop_espacial d on d.id = r.drop_id join producto p on p.id = d.producto_id join local l on l.id = p.local_id
+      `select r.drop_id, r.usado, d.precio_especial, d.fin, d.mensaje, p.id as producto_id, p.nombre as producto, p.precio_bs, p.foto_url, l.nombre as local, c.ambito
+       from reclamo_drop r join drop_espacial d on d.id = r.drop_id join producto p on p.id = d.producto_id join local l on l.id = p.local_id left join categoria c on c.id = p.categoria_id
        where r.cliente_id = $1 and not r.usado and d.fin > now()`,
       [clienteId],
     );

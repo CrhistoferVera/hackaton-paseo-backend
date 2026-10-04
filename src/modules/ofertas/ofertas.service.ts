@@ -43,6 +43,7 @@ function azar(semilla: string) {
 export class OfertasService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger('OfertasIA');
   private reloj?: NodeJS.Timeout;
+  private primera?: NodeJS.Timeout;
   private generando = false;
 
   constructor(
@@ -59,11 +60,12 @@ export class OfertasService implements OnModuleInit, OnModuleDestroy {
     if (process.env.OFERTAS_AUTOMATICAS === 'false') return;
     const revisar = () => void this.generarSiToca().catch((e) => this.log.warn(e.message));
     this.reloj = setInterval(revisar, 10 * 60_000);
-    setTimeout(revisar, 8000);
+    this.primera = setTimeout(revisar, 8000);
   }
 
   onModuleDestroy() {
     clearInterval(this.reloj);
+    clearTimeout(this.primera);
   }
 
   async ajustes(recintoId: string, q: Queryable = this.db): Promise<AjustesIa> {

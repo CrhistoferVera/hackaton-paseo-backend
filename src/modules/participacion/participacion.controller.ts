@@ -12,6 +12,7 @@ import { PromocionesService } from './promociones.service.js';
 const PromocionSchema = z.object({
   titulo: z.string().min(3),
   tipo: z.enum(['puntos_dobles', 'cupon']),
+  costoPuntos: z.number().int().positive().optional(),
   multiplicador: z.number().min(1).max(5).optional(),
   descripcion: z.string().optional(),
   segmentoId: zUuid.nullable().optional(),
@@ -22,7 +23,7 @@ const PromocionSchema = z.object({
   fin: zFecha,
   localId: zUuid.nullable().optional(),
 });
-const RevisionSchema = z.object({ estado: z.enum(['aprobada', 'rechazada']), comentario: z.string().optional() });
+const RevisionSchema = z.object({ estado: z.enum(['aprobada', 'rechazada']), comentario: z.string().optional(), costoPuntos: z.number().int().positive().optional() });
 const MisionSchema = z.object({
   nombre: z.string().min(3),
   descripcion: z.string().min(3),
@@ -127,7 +128,7 @@ export class ParticipacionAdminController {
   /** HU-A06 */
   @Post('promociones/:id/revision')
   revisar(@SesionActual() s: Sesion, @Param('id') id: string, @Body(new ZodPipe(RevisionSchema)) d: z.infer<typeof RevisionSchema>) {
-    return this.promociones.revisar(s, id, d.estado, d.comentario);
+    return this.promociones.revisar(s, id, d.estado, d.comentario, d.costoPuntos);
   }
 
   /** HU-A05 */

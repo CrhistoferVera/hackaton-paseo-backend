@@ -29,15 +29,18 @@ export class OidoJarvis implements OnModuleInit, OnModuleDestroy {
   private siguienteId = 1;
   private readonly pendientes = new Map<number, { ok: (t: string) => void; falla: (e: Error) => void; timer: NodeJS.Timeout }>();
   private cerrando = false;
+  private arranque?: NodeJS.Timeout;
 
   onModuleInit() {
     if (process.env.JARVIS_OIDO === 'false') return;
     // Carga en segundo plano: la API arranca de inmediato
-    setTimeout(() => void this.arrancar().catch((e) => this.log.warn(`Whisper no disponible: ${e.message}`)), 1500);
+    this.arranque = setTimeout(() => void this.arrancar().catch((e) => this.log.warn(`Whisper no disponible: ${e.message}`)), 1500);
   }
 
+  /** Al cerrar la app (o al terminar el seed) no queda un Whisper vivo que impida salir al proceso. */
   onModuleDestroy() {
     this.cerrando = true;
+    clearTimeout(this.arranque);
     this.hijo?.kill();
   }
 
@@ -47,6 +50,7 @@ export class OidoJarvis implements OnModuleInit, OnModuleDestroy {
 
   /** Lanza (una vez) el proceso de Whisper y espera a que tenga el modelo cargado. */
   private arrancar(): Promise<void> {
+    if (this.cerrando) return Promise.reject(new Error('la aplicación se está cerrando'));
     this.esperaListo ??= new Promise<void>((ok, falla) => {
       const archivo = fileURLToPath(new URL('./oido.worker.js', import.meta.url));
       if (!existsSync(archivo)) return falla(new Error(`no se encontró ${archivo}`));

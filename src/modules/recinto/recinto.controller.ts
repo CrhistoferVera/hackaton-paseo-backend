@@ -20,6 +20,8 @@ const LocalSchema = z.object({
   palabrasClave: z.array(z.string()).optional(),
   nit: z.string().nullable().optional(),
   activo: z.boolean().optional(),
+  fotoUrl: z.string().nullable().optional(),
+  bannerUrl: z.string().nullable().optional(),
 });
 const CategoriaSchema = z.object({ nombre: z.string().min(2), ambito: z.enum(['comida', 'tiendas']), orden: z.number().int().optional() });
 
@@ -93,6 +95,12 @@ export class AdminRecintoController {
   }
 }
 
+const ActualizarMiLocalSchema = z.object({
+  descripcion: z.string().optional(),
+  fotoUrl: z.string().nullable().optional(),
+  bannerUrl: z.string().nullable().optional(),
+});
+
 @Roles('comercio')
 @Controller('local')
 export class LocalRecintoController {
@@ -101,6 +109,15 @@ export class LocalRecintoController {
   @Get('mi-local')
   miLocal(@SesionActual() s: Sesion) {
     return this.svc.local(s.localId!);
+  }
+
+  @Patch('mi-local')
+  actualizarMiLocal(
+    @SesionActual() s: Sesion,
+    @Body(new ZodPipe(ActualizarMiLocalSchema)) d: { descripcion?: string; fotoUrl?: string | null; bannerUrl?: string | null },
+  ) {
+    if (!s.localId) throw new ForbiddenException('Tu usuario no está asignado a un local');
+    return this.svc.actualizarMiLocal(s.localId, d);
   }
 
   /** HU-L07: el comercio descarga el QR de su puerta en PDF. */
@@ -114,3 +131,4 @@ export class LocalRecintoController {
     res.end(pdf);
   }
 }
+

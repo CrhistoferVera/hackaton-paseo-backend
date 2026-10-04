@@ -14,6 +14,10 @@ export class RealtimeService {
     this.gw.emitir(`local:${localId}`, evento, datos);
   }
 
+  catalogo(recintoId: string) {
+    this.gw.emitir(`catalogo:${recintoId}`, 'catalogo', {});
+  }
+
   aSala(recintoId: string, evento: string, datos: unknown = {}) {
     this.gw.emitir(`sala:${recintoId}`, evento, datos);
   }

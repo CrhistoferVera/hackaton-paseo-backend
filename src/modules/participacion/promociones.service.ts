@@ -1,3 +1,4 @@
+import { RealtimeService } from '../../infra/realtime/realtime.service.js';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Db, Queryable, many, one } from '../../infra/db/db.js';
 import type { Sesion } from '../../common/auth/tokens.js';
@@ -8,6 +9,7 @@ export interface DatosPromocion {
   titulo: string;
   tipo: 'puntos_dobles' | 'cupon';
   multiplicador?: number;
+  costoPuntos?: number;
   descripcion?: string;
   segmentoId?: string | null;
   diasSemana?: number[];
@@ -22,6 +24,7 @@ export interface DatosPromocion {
 export class PromocionesService {
   constructor(
     private readonly db: Db,
+    private readonly rt: RealtimeService,
     private readonly auditoria: AuditoriaService,
     private readonly notif: NotificacionesService,
   ) {}
@@ -52,7 +55,7 @@ export class PromocionesService {
     const { fecha, dia, hhmm } = ahoraBolivia(en);
     return many(
       this.db,
-      `select p.id, p.titulo, p.tipo, p.multiplicador, p.descripcion, p.hora_inicio, p.hora_fin, p.inicio, p.fin, p.dias_semana,
+      `select p.id, p.titulo, p.tipo, p.multiplicador, p.costo_puntos, (select r.id from recompensa r where r.promocion_id=p.id) as recompensa_id, p.descripcion, p.hora_inicio, p.hora_fin, p.inicio, p.fin, p.dias_semana,
               l.id as local_id, l.nombre as local, l.piso, l.sector, l.numero_local, l.coord_x, l.coord_y,
               ($5::time between p.hora_inicio and p.hora_fin and $4 = any(p.dias_semana)) as activa_ahora
        from promocion p left join local l on l.id = p.local_id left join segmento s on s.id = p.segmento_id
@@ -64,6 +67,7 @@ export class PromocionesService {
   }
 
   private validar(d: DatosPromocion) {
+    if (d.tipo === 'cupon' && (!Number.isInteger(d.costoPuntos) || d.costoPuntos! <= 0)) throw new BadRequestException('Indica el costo en puntos del cupón');
     if (d.fin < d.inicio) throw new BadRequestException('La fecha de fin es anterior a la de inicio');
     if (d.tipo === 'puntos_dobles' && (d.multiplicador ?? 2) <= 1) throw new BadRequestException('El multiplicador debe ser mayor a 1');
   }
@@ -79,6 +83,11 @@ export class PromocionesService {
         await this.notif.crear(q, a.id, 'promocion_pendiente', 'Promoción por aprobar', `${p.titulo} espera tu revisión`, { promocionId: p.id });
       }
       return p;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'promociones', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'promociones', {});
+      return r;
     });
   }
 
@@ -87,19 +96,34 @@ export class PromocionesService {
     this.validar(d);
     return this.db.tx(async (q) => {
       const p = await this.insertar(q, s, d.localId ?? null, d, 'aprobada');
+      await this.sincronizarCupon(q,p);
       await this.auditoria.registrar(q, s.sub, 'crear_promocion', 'promocion', p.id, null, p);
       return p;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'promociones', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'promociones', {});
+      return r;
     });
+  }
+
+  private async sincronizarCupon(q: Queryable, p: any) {
+    if (p.tipo !== 'cupon' || !p.costo_puntos) return;
+    await q.query(`insert into recompensa (recinto_id,local_id,nombre,descripcion,costo_puntos,vigencia_desde,vigencia_hasta,activo,promocion_id)
+      values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict (promocion_id) do update set
+      nombre=excluded.nombre,descripcion=excluded.descripcion,costo_puntos=excluded.costo_puntos,
+      vigencia_desde=excluded.vigencia_desde,vigencia_hasta=excluded.vigencia_hasta,activo=excluded.activo`,
+      [p.recinto_id,p.local_id,p.titulo,p.descripcion,p.costo_puntos,p.inicio,p.fin,p.estado==='aprobada',p.id]);
   }
 
   private insertar(q: Queryable, s: Sesion, localId: string | null, d: DatosPromocion, estado: string) {
     return one(
       q,
-      `insert into promocion (recinto_id, local_id, titulo, tipo, multiplicador, descripcion, segmento_id, dias_semana, hora_inicio, hora_fin, inicio, fin, estado, creado_por)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *`,
+      `insert into promocion (recinto_id, local_id, titulo, tipo, multiplicador, descripcion, segmento_id, dias_semana, hora_inicio, hora_fin, inicio, fin, estado, creado_por, costo_puntos)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
       [
         s.recintoId, localId, d.titulo, d.tipo, d.tipo === 'puntos_dobles' ? (d.multiplicador ?? 2) : 1, d.descripcion ?? '',
-        d.segmentoId ?? null, d.diasSemana ?? [0, 1, 2, 3, 4, 5, 6], d.horaInicio ?? '00:00', d.horaFin ?? '23:59', d.inicio, d.fin, estado, s.sub,
+        d.segmentoId ?? null, d.diasSemana ?? [0, 1, 2, 3, 4, 5, 6], d.horaInicio ?? '00:00', d.horaFin ?? '23:59', d.inicio, d.fin, estado, s.sub, d.tipo === 'cupon' ? d.costoPuntos : null,
       ],
     );
   }
@@ -108,11 +132,20 @@ export class PromocionesService {
   async finalizarDeLocal(s: Sesion, id: string) {
     const p = await one<any>(this.db, 'select * from promocion where id = $1 and local_id = $2', [id, s.localId]);
     if (!p) throw new NotFoundException('Promoción no encontrada');
-    if (p.estado !== 'aprobada') {
-      await this.db.query('delete from promocion where id = $1', [id]);
-      return { id, eliminada: true };
-    }
-    return one(this.db, `update promocion set fin = least(fin, (now() at time zone 'America/La_Paz')::date - 1) where id = $1 returning *`, [id]);
+    await this.db.tx(async q => {
+      if (p.estado !== 'aprobada') {
+        const vinculada = await one(q, 'select id from recompensa where promocion_id=$1', [id]);
+        if (!vinculada) {
+          await q.query('delete from promocion where id=$1', [id]);
+          return;
+        }
+      }
+      await q.query(`update promocion set fin=least(fin,(now() at time zone 'America/La_Paz')::date-1) where id=$1`,[id]);
+      await q.query('update recompensa set activo=false where promocion_id=$1',[id]);
+    });
+    this.rt.aSala(s.recintoId,'promociones',{});
+    this.rt.catalogo(s.recintoId);
+    return {id,finalizada:true};
   }
 
   delLocal(localId: string) {
@@ -135,12 +168,15 @@ export class PromocionesService {
   }
 
   /** HU-A06: aprobar o rechazar con comentario. */
-  async revisar(s: Sesion, id: string, estado: 'aprobada' | 'rechazada', comentario?: string) {
+  async revisar(s: Sesion, id: string, estado: 'aprobada' | 'rechazada', comentario?: string, costoPuntos?: number) {
     return this.db.tx(async (q) => {
       const antes = await one<any>(q, 'select * from promocion where id = $1 and recinto_id = $2 for update', [id, s.recintoId]);
       if (!antes) throw new NotFoundException('Promoción no encontrada');
       if (estado === 'rechazada' && !comentario?.trim()) throw new BadRequestException('Explica el motivo del rechazo');
-      const p = await one(q, 'update promocion set estado = $2, comentario = $3, revisado_por = $4 where id = $1 returning *', [id, estado, comentario ?? null, s.sub]);
+      const costo = costoPuntos ?? antes.costo_puntos;
+      if (estado === 'aprobada' && antes.tipo === 'cupon' && (!Number.isInteger(costo) || costo <= 0)) throw new BadRequestException('Define el costo en puntos antes de aprobar el cupón');
+      const p = await one(q, 'update promocion set estado=$2,comentario=$3,revisado_por=$4,costo_puntos=$5 where id=$1 returning *',[id,estado,comentario ?? null,s.sub,costo ?? null]);
+      await this.sincronizarCupon(q,p);
       await this.auditoria.registrar(q, s.sub, `promocion_${estado}`, 'promocion', id, antes, p);
       if (antes.creado_por) {
         await this.notif.crear(
@@ -151,6 +187,11 @@ export class PromocionesService {
         );
       }
       return p;
+    }).then(r => {
+      this.rt.aSala(s.recintoId, 'promociones', {});
+      this.rt.catalogo(s.recintoId);
+      if (s.localId) this.rt.aLocal(s.localId, 'promociones', {});
+      return r;
     });
   }
 }

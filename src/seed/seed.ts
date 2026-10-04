@@ -48,6 +48,8 @@ function diaSemanaBo(diaOffset: number) {
   return new Date(instante(diaOffset, 12).getTime() - 4 * MS_HORA).getUTCDay();
 }
 const horaDecimal = (hhmm: string) => Number(hhmm.slice(0, 2)) + Number(hhmm.slice(3, 5)) / 60;
+/** Fecha boliviana (UTC-4) de un instante, como «AAAA-MM-DD». */
+const fechaBo = (d: Date) => new Date(d.getTime() - 4 * MS_HORA).toISOString().slice(0, 10);
 const horaAhoraBo = () => {
   const bo = new Date(ahora.getTime() - 4 * MS_HORA);
   return bo.getUTCHours() + bo.getUTCMinutes() / 60;
@@ -562,11 +564,13 @@ async function main() {
       const nLocales = prob(0.25) ? 2 : 1;
       const elegidos = [...new Set([elegir(prob(0.7) ? localesComida : localesProd), elegir(localesProd)])].slice(0, nLocales);
       let total = 0;
+      let hayComida = false;
       const futuro = franjaFin.getTime() > ahora.getTime();
       for (const lid of elegidos) {
         const subId = randomUUID();
         const lista = productos.filter((p) => p.local === lid);
         const items = [...new Set([elegir(lista), ...(prob(0.4) ? [elegir(lista)] : [])])];
+        if (items.some((it) => it.comida)) hayComida = true;
         let sub = 0;
         for (const it of items) {
           const cant = entero(1, 2);
@@ -600,7 +604,8 @@ async function main() {
           }
         }
       }
-      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, c.id, total, franjaIni, franjaFin, creado]);
+      // Tipo de pedido (migración 008): comida si lleva algo de comida; si es de tienda, con fecha estimada de retiro
+      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, c.id, total, franjaIni, franjaFin, creado, hayComida ? 'comida' : 'retail', hayComida ? null : fechaBo(franjaIni)]);
     }
 
     // -------------------------------------------------------------- María: estado vivo para probar la app y a Jarvis
@@ -621,7 +626,7 @@ async function main() {
           new Date(ahora.getTime() - (haceMin + 5) * 60_000), new Date(ahora.getTime() - haceMin * 60_000), estado === 'listo' ? new Date(ahora.getTime() - 3 * 60_000) : null, null, 0]);
         filasItem.push([randomUUID(), subId, p.id, p.nombre, cant, p.precio]);
       }
-      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, maria.id, total, franjaIni, new Date(franjaIni.getTime() + 30 * 60_000), new Date(ahora.getTime() - 40 * 60_000)]);
+      filasPedido.push([pedidoId, recintoId, `P-${codigoLegible(6)}`, maria.id, total, franjaIni, new Date(franjaIni.getTime() + 30 * 60_000), new Date(ahora.getTime() - 40 * 60_000), 'comida', null]);
       // Visita abierta y parqueo en curso
       filasVisita.push([randomUUID(), recintoId, maria.id, 'parqueo', 'Parqueo', new Date(ahora.getTime() - 50 * 60_000), null, 0]);
       filasParqueo.push([maria.id, `T-${codigoLegible(6)}`, new Date(ahora.getTime() - 55 * 60_000), null, null, 0, 0, 0, 'abierto']);
@@ -669,7 +674,7 @@ async function main() {
     await insertarLote(q, 'checkin_local', ['id', 'cliente_id', 'local_id', 'entrada_en', 'salida_en', 'con_compra', 'puntos', 'origen'], filasCheckin);
     await insertarLote(q, 'canje', ['id', 'cliente_id', 'recompensa_id', 'codigo', 'costo_puntos', 'estado', 'emitido_en', 'expira_en', 'validado_por', 'validado_local', 'validado_en'], filasCanje);
     await insertarLote(q, 'busqueda', ['recinto_id', 'id_seudonimo', 'termino', 'origen', 'resultados', 'creado_en'], filasBusqueda);
-    await insertarLote(q, 'pedido', ['id', 'recinto_id', 'codigo', 'cliente_id', 'total_bs', 'franja_inicio', 'franja_fin', 'creado_en'], filasPedido);
+    await insertarLote(q, 'pedido', ['id', 'recinto_id', 'codigo', 'cliente_id', 'total_bs', 'franja_inicio', 'franja_fin', 'creado_en', 'tipo', 'fecha_estimada_retiro'], filasPedido);
     await insertarLote(q, 'subpedido', ['id', 'pedido_id', 'local_id', 'estado', 'total_bs', 'codigo_retiro', 'pin', 'pago', 'confirmado_en', 'preparando_en', 'listo_en', 'entregado_en', 'puntos'], filasSub);
     await insertarLote(q, 'subpedido_item', ['id', 'subpedido_id', 'producto_id', 'nombre', 'cantidad', 'precio_bs'], filasItem);
     await insertarLote(q, 'reclamo_drop', ['drop_id', 'cliente_id', 'usado', 'creado_en'], filasReclamoDrop);

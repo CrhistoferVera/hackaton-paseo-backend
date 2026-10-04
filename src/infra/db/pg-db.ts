@@ -16,7 +16,7 @@ export class PgDb extends Db {
     this.pool = new pg.Pool({
       connectionString,
       max: 10,
-      ssl: /sslmode=require|neon\.tech|supabase\.co/.test(connectionString) ? { rejectUnauthorized: false } : undefined,
+      ssl: /sslmode=require|neon\.tech|supabase\.co|render\.com/.test(connectionString) ? { rejectUnauthorized: false } : undefined,
     });
   }
 
